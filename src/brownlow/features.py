@@ -289,7 +289,13 @@ def add_form_features(df: pd.DataFrame, halflife: float = 4.0) -> pd.DataFrame:
     order = ["_player_key", "season"]
     if "round_number" in out.columns:
         order.append("round_number")
-    out = out.sort_values(order)
+    # match_id completes the ordering. Without it two rows for the same player in
+    # the same round tie, and a tie is broken by whatever order the rows happened
+    # to arrive in -- which makes the rolling average depend on the caller's row
+    # order rather than on the player's career.
+    if "match_id" in out.columns:
+        order.append("match_id")
+    out = out.sort_values(order, kind="stable")
 
     grouped = out.groupby("_player_key", sort=False)
     for stat in FORM_STATS:

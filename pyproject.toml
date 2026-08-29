@@ -41,6 +41,12 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    # Contract tests against the real AFL Tables download. They skip themselves
+    # when it is absent, which is how CI runs. Locally, `brownlow fetch` turns
+    # them on; `pytest -m realdata` runs only those.
+    "realdata: needs the downloaded AFL Tables data",
+]
 
 [tool.ruff]
 line-length = 100
