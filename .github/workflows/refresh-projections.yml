@@ -1,0 +1,58 @@
+name: Refresh projections
+
+# Re-runs the model against the latest data and opens a pull request with the
+# updated results page. Useful during the season, when new rounds are played
+# every week.
+#
+# Run it by hand from the Actions tab, or let the weekly schedule fire it.
+on:
+  schedule:
+    - cron: "0 20 * * 1"  # Monday 20:00 UTC, after the weekend's games
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[data]"
+
+      - name: Re-run every saved experiment against fresh data
+        run: |
+          for config in experiments/*.json; do
+            echo "Running $config"
+            brownlow run "$config" --seasons 2015-2026 --refresh
+          done
+
+      - name: Open a pull request if the projections moved
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet -- docs/; then
+            echo "Projections unchanged. Nothing to do."
+            exit 0
+          fi
+          BRANCH="refresh-projections-$(date +%Y-%m-%d)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add docs/
+          git commit -m "Refresh projections with the latest match data"
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "Refresh projections ($(date +%Y-%m-%d))" \
+            --body "Automated re-run of every config in \`experiments/\` against the latest AFL Tables data. Review the changed numbers in \`docs/index.html\` before merging." \
+            --base main --head "$BRANCH"

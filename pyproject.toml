@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "brownlow"
+version = "0.1.0"
+description = "A Brownlow Medal vote prediction model built on AFL Tables player statistics."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Julia" }]
+keywords = ["afl", "brownlow", "sports-analytics", "plackett-luce", "ranking"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+dependencies = [
+    "numpy>=1.22",
+    "pandas>=1.5",
+    "scipy>=1.9",
+]
+
+[project.optional-dependencies]
+# Reading the AFL Tables .rda mirror needs pyreadr; keep it optional so the
+# model itself installs cleanly anywhere.
+data = ["pyreadr>=0.4", "requests>=2.28"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.1"]
+
+[project.scripts]
+brownlow = "brownlow.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/julia-latrobe/Brownlow-medal"
+Issues = "https://github.com/julia-latrobe/Brownlow-medal/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# The project supports Python 3.9, so we keep the explicit typing.Optional /
+# typing.Dict spellings rather than the 3.10+ shorthand.
+ignore = ["UP006", "UP035", "UP045"]
+
+[tool.ruff.lint.per-file-ignores]
+# report.py embeds a JavaScript template as a string; rewrapping those lines to
+# Python's limit would make the JavaScript harder to read, not easier.
+"src/brownlow/report.py" = ["E501"]

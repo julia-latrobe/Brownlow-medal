@@ -1,0 +1,14 @@
+{
+  "name": "logistic-baseline",
+  "model": "logistic",
+  "alpha": 1.0,
+  "train_seasons": "2015-2024",
+  "test_seasons": "2025",
+  "predict_seasons": "2026",
+  "n_simulations": 10000,
+  "seed": 0,
+  "ineligible": [],
+  "compare_baseline": true,
+  "features": {},
+  "notes": "Weighted logistic regression, ranked to 3-2-1. Simpler comparison point."
+}
