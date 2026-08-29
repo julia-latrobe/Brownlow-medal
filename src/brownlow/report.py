@@ -54,7 +54,12 @@ def _clean(value: Any) -> Any:
     return value
 
 
-def collect_run(run_dir: Path) -> Optional[Dict[str, Any]]:
+#: How many players keep full per-match detail on the page. See _collect_games.
+DEFAULT_DETAIL_PLAYERS = 100
+
+
+def collect_run(run_dir: Path, detail_players: Optional[int] = DEFAULT_DETAIL_PLAYERS
+                ) -> Optional[Dict[str, Any]]:
     """Read one experiment folder into the payload the page needs."""
     metrics_file = run_dir / "metrics.json"
     leaderboard_file = run_dir / "leaderboard.csv"
@@ -85,7 +90,7 @@ def collect_run(run_dir: Path) -> Optional[Dict[str, Any]]:
     rounds: List[Dict[str, Any]] = []
     predictions_file = run_dir / "predictions.csv"
     if predictions_file.exists():
-        games, opponents = _collect_games(predictions_file, board)
+        games, opponents = _collect_games(predictions_file, board, detail_players)
         rounds = _collect_rounds(predictions_file)
 
     coefficients: List[Dict[str, Any]] = []
@@ -114,12 +119,14 @@ def collect_run(run_dir: Path) -> Optional[Dict[str, Any]]:
         "predict_seasons": predict_seasons,
         "simulations": config.get("n_simulations"),
         "holdout": metrics.get("holdout_metrics") or {},
+        "cv": metrics.get("cv_metrics") or {},
         "comparison": metrics.get("comparison") or {},
         "coefficients": coefficients,
         "players": players,
         "games": games,
         "opponents": opponents,
         "rounds": rounds,
+        "detail_players": detail_players,
         # Presentational labels beside a player's name. They never touch the model.
         "annotations": config.get("annotations") or {},
     }
@@ -133,13 +140,19 @@ def _round_number(value: Any) -> Any:
         return str(value)
 
 
-def _collect_games(predictions_file: Path, board: pd.DataFrame):
+def _collect_games(predictions_file: Path, board: pd.DataFrame, limit: Optional[int] = None):
     """Build each player's round-by-round projection, in the leaderboard's order.
 
     Returns a list parallel to ``board``'s rows, each holding that player's
     matches as ``[round, opponent index, is home, expected votes, p3, p2, p1,
     actual votes]``. Players are identified by name *and* club, because two
     players can share a name.
+
+    ``limit`` keeps per-match detail for only the leading players. These rows are
+    most of the page's weight -- a season is roughly 9,500 of them per run -- and
+    a player ranked 400th projected to poll a fraction of a vote is not someone
+    anyone opens. Players past the cut still get their season summary; the page
+    says so rather than showing an empty table.
     """
     frame = pd.read_csv(predictions_file)
     if "player" not in frame.columns:
@@ -186,7 +199,12 @@ def _collect_games(predictions_file: Path, board: pd.DataFrame):
     board_keys = board["player"].astype(str)
     if has_team:
         board_keys = board_keys + "|" + board["team"].astype(str)
-    return [grouped.get(key, []) for key in board_keys], opponent_names
+    keys = list(board_keys)
+    return (
+        [grouped.get(key, []) if limit is None or i < limit else []
+         for i, key in enumerate(keys)],
+        opponent_names,
+    )
 
 
 def _collect_rounds(predictions_file: Path, top_n: int = 5):
@@ -260,7 +278,9 @@ def _collect_rounds(predictions_file: Path, top_n: int = 5):
     return rounds
 
 
-def collect_runs(output_root: Optional[Path] = None) -> List[Dict[str, Any]]:
+def collect_runs(output_root: Optional[Path] = None,
+                 detail_players: Optional[int] = DEFAULT_DETAIL_PLAYERS
+                 ) -> List[Dict[str, Any]]:
     root = Path(output_root) if output_root else default_output_root()
     runs = []
     directories = [d for d in (root.iterdir() if root.exists() else []) if d.is_dir()]
@@ -269,10 +289,45 @@ def collect_runs(output_root: Optional[Path] = None) -> List[Dict[str, Any]]:
     directories.sort(key=lambda d: (d / "metrics.json").stat().st_mtime
                      if (d / "metrics.json").exists() else 0, reverse=True)
     for run_dir in directories:
-        payload = collect_run(run_dir)
+        payload = collect_run(run_dir, detail_players)
         if payload:
             runs.append(payload)
-    return runs
+    return rank_runs(runs)
+
+
+def run_score(run: Dict[str, Any]):
+    """How good a run is, for ordering. Higher is better.
+
+    Uses cross-validated top-3 recall where the run recorded it, and the single
+    held-out season otherwise. The distinction matters: scenarios here differ by
+    fractions of a percentage point, and one season is a noisy enough measure to
+    crown the wrong one.
+
+    Top-3 recall is the metric because getting the right three players in the
+    wrong order is nearly right. Log-likelihood breaks ties, rewarding a model
+    for being correctly confident rather than merely correct.
+    """
+    cv = run.get("cv") or {}
+    holdout = run.get("holdout") or {}
+    source = cv if cv.get("top3_recall") is not None else holdout
+    recall = source.get("top3_recall")
+    likelihood = source.get("log_likelihood_per_match")
+    return (
+        recall if recall is not None else -1.0,
+        likelihood if likelihood is not None else -1e9,
+    )
+
+
+def rank_runs(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Order runs best first, and mark which one leads and on what basis."""
+    ordered = sorted(runs, key=run_score, reverse=True)
+    for position, run in enumerate(ordered):
+        run["is_best"] = position == 0 and run_score(run)[0] >= 0
+        run["ranked_on"] = (
+            "cross-validation" if (run.get("cv") or {}).get("top3_recall") is not None
+            else "the held-out season"
+        )
+    return ordered
 
 
 def _logo() -> str:
@@ -355,7 +410,11 @@ select {{
   background: var(--surface); color: var(--text);
   border: 1px solid var(--border); border-radius: 7px;
 }}
-.run-meta {{ font-size: 12.5px; color: var(--muted); margin-left: auto; text-align: right; max-width: 42ch; line-height: 1.45; }}
+/* Sits under the controls as its own line: the notes can run long, and reading
+   a paragraph ragged-left in a narrow right-hand column is unpleasant. */
+.run-meta {{ font-size: 13px; color: var(--muted); line-height: 1.5;
+             margin: 10px 2px 0; max-width: 84ch; }}
+.run-meta .pill {{ margin-right: 6px; }}
 .tiles {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(178px, 1fr)); gap: 12px; margin: 16px 0 8px; }}
 .tile {{ background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 13px 15px; }}
 .tile-label {{ font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--faint); }}
@@ -641,9 +700,15 @@ function render() {
   const seasons = run.train_seasons || [];
   const trained = seasons.length > 2
     ? `${seasons[0]}\u2013${seasons[seasons.length - 1]}` : seasons.join(', ');
-  $('run-meta').innerHTML =
+  const cv = run.cv || {};
+  const best = run.is_best
+    ? `<span class="pill">best of ${RUNS.length}, by ${esc(run.ranked_on || 'score')}</span>` : '';
+  const folds = cv.n_folds
+    ? ` · cross-validated over ${cv.n_folds} seasons: ` +
+      `${(cv.top3_recall * 100).toFixed(1)}% top-3 recall` : '';
+  $('run-meta').innerHTML = best +
     `Trained on ${esc(trained)}` +
-    (run.model ? ` · ${esc(run.model)} (alpha ${esc(run.alpha)})` : '') +
+    (run.model ? ` · ${esc(run.model)} (alpha ${esc(run.alpha)})` : '') + folds +
     (run.notes ? `<br>${esc(run.notes)}` : '');
 
   // Headline tiles
@@ -769,7 +834,9 @@ function teamTable(run, totals) {
 
 function playerTable(run, ranked, hasWin) {
   const hasActual = ranked.some(p => p.actual_votes !== null && p.actual_votes !== undefined);
-  const rows = ranked.slice(0, 60).map((p, i) => `<tr>
+  // Matches the per-match detail cap, so every player listed here has a full
+  // round-by-round page behind their name.
+  const rows = ranked.slice(0, run.detail_players || 50).map((p, i) => `<tr>
     <td class="num">${i + 1}</td><td>${playerLink(run, p)}</td><td>${esc(p.team || '--')}</td>
     <td class="num">${fmt(p.predicted_votes)}</td>
     <td class="num">${p.games === undefined || p.games === null ? '--' : p.games}</td>
@@ -902,6 +969,7 @@ function renderPlayer(key) {
     </div>
     <p class="note">Projected votes for ${esc(run.season_label)}, match by match.</p>
     <div class="tiles">${tiles}</div>
+    ${games.length ? `
     <h2>Round by round</h2>
     <p class="note">How many votes this player is projected to poll in each match.
        Three is the most any single game can award.</p>
@@ -913,7 +981,12 @@ function renderPlayer(key) {
       <th>Round</th><th>Opponent</th><th>H/A</th>
       <th>P(3)</th><th>P(2)</th><th>P(1)</th><th>Expected</th>
       ${showActual ? '<th>Actual</th>' : ''}
-    </tr></thead><tbody>${rows}</tbody></table></div>
+    </tr></thead><tbody>${rows}</tbody></table></div>` : `
+    <p class="note">Match-by-match detail is kept for the top
+       ${run.detail_players || 100} players, to hold the page size down. This
+       player's season totals are above; the
+       <a class="nav-link" href="${roundHref((run.rounds && run.rounds.length)
+         ? run.rounds[0].round : '1')}">round pages</a> show every match.</p>`}
     <p><a class="back-link" href="#">&larr; Back to the season</a></p>`;
   attachTips(view);
   return p;
@@ -1162,9 +1235,20 @@ def render_site(
     docs_path: Optional[Path] = None,
     title: str = "Brownlow Medal Projections",
     active_run: Optional[str] = None,
+    detail_players: Optional[int] = DEFAULT_DETAIL_PLAYERS,
 ) -> Path:
-    """Build ``docs/index.html`` from every experiment run on disk."""
-    runs = collect_runs(output_root)
+    """Build ``docs/index.html`` from every experiment run on disk.
+
+    Runs are ordered by how well they scored on their held-out season, so the
+    page opens on the best one. ``active_run`` is accepted for callers that pass
+    it but no longer changes the order -- the best model leads regardless of
+    which one was run most recently.
+
+    ``detail_players`` caps how many players keep round-by-round detail. Lower it
+    if the page grows uncomfortably large as scenarios are added; pass ``None``
+    to keep every player's matches.
+    """
+    runs = collect_runs(output_root, detail_players)
     docs_path = Path(docs_path) if docs_path else default_docs_path()
     docs_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1172,14 +1256,23 @@ def render_site(
         raise ValueError(
             "No experiment runs found. Run `brownlow predict` or `brownlow run` first."
         )
-    if active_run:
-        runs.sort(key=lambda r: r["name"] != active_run)
+
+    # collect_runs already returns them best first (see rank_runs).
 
     generated = datetime.now(timezone.utc).strftime("%d %B %Y, %H:%M UTC")
+    # The label carries the score, so the ordering explains itself.
+    def option_label(run: Dict[str, Any]) -> str:
+        cv = run.get("cv") or {}
+        recall = cv.get("top3_recall")
+        if recall is None:
+            recall = (run.get("holdout") or {}).get("top3_recall")
+        parts = [run["name"]]
+        if recall is not None:
+            parts.append(f"{recall * 100:.1f}%")
+        return " -- ".join(parts)
+
     options = "".join(
-        f'<option value="{r["name"]}">{r["name"]}'
-        f'{" -- " + r["season_label"] if r["season_label"] != "--" else ""}</option>'
-        for r in runs
+        f'<option value="{r["name"]}">{option_label(r)}</option>' for r in runs
     )
 
     document = f"""<!doctype html>
@@ -1202,7 +1295,7 @@ def render_site(
 
 <div class="controls">
   <div class="control">
-    <label for="run-select">Model run</label>
+    <label for="run-select" title="Ordered best first">Model</label>
     <select id="run-select">{options}</select>
   </div>
   <div class="control">
@@ -1219,8 +1312,8 @@ def render_site(
     <label for="round-select">Round</label>
     <select id="round-select"><option value="">Whole season</option></select>
   </div>
-  <div class="run-meta" id="run-meta"></div>
 </div>
+<div class="run-meta" id="run-meta"></div>
 
 <div id="season-view">
 <div class="tiles" id="tiles"></div>

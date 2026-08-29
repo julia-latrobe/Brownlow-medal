@@ -42,10 +42,24 @@ class TestCollectGames:
         payload = collect_run(run_dir)
         assert len(payload["games"]) == len(payload["players"])
 
-    def test_every_match_is_represented(self, run_dir):
-        payload = collect_run(run_dir)
+    def test_every_match_is_represented_when_uncapped(self, run_dir):
+        payload = collect_run(run_dir, detail_players=None)
         predictions = pd.read_csv(run_dir / "predictions.csv")
         assert sum(len(g) for g in payload["games"]) == len(predictions)
+
+    def test_detail_is_capped_to_the_leading_players(self, run_dir):
+        """Per-match rows are most of the page's weight, so they are capped."""
+        payload = collect_run(run_dir, detail_players=5)
+        with_detail = [i for i, g in enumerate(payload["games"]) if g]
+        assert with_detail == list(range(5)), "the cap should keep the top players"
+        assert payload["detail_players"] == 5
+
+    def test_capping_shrinks_the_payload(self, run_dir):
+        full = collect_run(run_dir, detail_players=None)
+        capped = collect_run(run_dir, detail_players=5)
+        assert sum(len(g) for g in capped["games"]) < sum(len(g) for g in full["games"])
+        # Every player still gets their season summary.
+        assert len(capped["players"]) == len(full["players"])
 
     def test_rows_are_compact_numeric_arrays(self, run_dir):
         """Per-match rows are the bulk of the page, so they stay as arrays."""
@@ -54,7 +68,8 @@ class TestCollectGames:
         assert len(first[0]) == 8  # round, opponent, home, expected, p3, p2, p1, actual
 
     def test_expected_votes_match_the_leaderboard_total(self, run_dir):
-        payload = collect_run(run_dir)
+        """A player's match rows must add up to their season projection."""
+        payload = collect_run(run_dir, detail_players=None)
         for player, games in zip(payload["players"], payload["games"]):
             total = sum(g[3] or 0 for g in games)
             assert total == pytest.approx(player["predicted_votes"], abs=0.01)
@@ -202,3 +217,67 @@ class TestRenderSite:
                 synthetic_seasons, output_dir=tmp_path,
             )
         assert [r["name"] for r in collect_runs(tmp_path)][0] == "newer"
+
+
+class TestBestModelLeads:
+    """The page should open on the best model, not the most recent one."""
+
+    def _write(self, tmp_path, name, top3, loglik=-5.0, cv=None):
+        run_dir = tmp_path / name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "metrics.json").write_text(json.dumps({
+            "name": name,
+            "config": {"name": name, "model": "plackett_luce", "alpha": 1.0},
+            "train_seasons": [2020], "test_seasons": [2021], "predict_seasons": [],
+            "holdout_metrics": {"top3_recall": top3, "log_likelihood_per_match": loglik},
+            "cv_metrics": cv,
+        }))
+        pd.DataFrame({"player": ["A"], "team": ["Geelong"],
+                      "predicted_votes": [1.0], "games": [1]}).to_csv(
+            run_dir / "leaderboard.csv", index=False)
+        return run_dir
+
+    def test_best_holdout_score_comes_first(self, tmp_path):
+        self._write(tmp_path, "worse", top3=0.50)
+        self._write(tmp_path, "better", top3=0.70)
+        assert [r["name"] for r in collect_runs(tmp_path)] == ["better", "worse"]
+
+        page = render_site(output_root=tmp_path, docs_path=tmp_path / "i.html")
+        options = [line for line in page.read_text().splitlines() if "<option" in line]
+        assert "better" in options[0]
+
+    def test_cross_validation_outranks_a_single_season(self, tmp_path):
+        """One season is too noisy to rank on when CV is available."""
+        # 'lucky' wins the single holdout but loses across the folds.
+        self._write(tmp_path, "lucky", top3=0.90,
+                    cv={"top3_recall": 0.60, "log_likelihood_per_match": -5.5,
+                        "n_folds": 6})
+        self._write(tmp_path, "steady", top3=0.50,
+                    cv={"top3_recall": 0.65, "log_likelihood_per_match": -5.4,
+                        "n_folds": 6})
+        runs = collect_runs(tmp_path)
+        page = render_site(output_root=tmp_path, docs_path=tmp_path / "i.html")
+        first = [line for line in page.read_text().splitlines() if "<option" in line][0]
+        assert "steady" in first, "cross-validation should decide, not one season"
+        assert any(r["name"] == "steady" and r["is_best"] for r in runs)
+
+    def test_ranking_basis_is_reported(self, tmp_path):
+        self._write(tmp_path, "with-cv", top3=0.5,
+                    cv={"top3_recall": 0.6, "n_folds": 4})
+        self._write(tmp_path, "without-cv", top3=0.4)
+        by_name = {r["name"]: r for r in collect_runs(tmp_path)}
+        assert by_name["with-cv"]["ranked_on"] == "cross-validation"
+        assert by_name["without-cv"]["ranked_on"] == "the held-out season"
+
+    def test_a_run_with_no_scores_sorts_last(self, tmp_path):
+        self._write(tmp_path, "scored", top3=0.4)
+        unscored = tmp_path / "unscored"
+        unscored.mkdir()
+        (unscored / "metrics.json").write_text(json.dumps({
+            "name": "unscored", "config": {}, "train_seasons": [2020],
+            "test_seasons": [], "predict_seasons": [2022], "holdout_metrics": None,
+        }))
+        pd.DataFrame({"player": ["A"], "team": ["Geelong"],
+                      "predicted_votes": [1.0], "games": [1]}).to_csv(
+            unscored / "leaderboard.csv", index=False)
+        assert [r["name"] for r in collect_runs(tmp_path)][0] == "scored"

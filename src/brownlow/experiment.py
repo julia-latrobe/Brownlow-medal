@@ -81,6 +81,12 @@ class ExperimentConfig:
     #: ``{"Some Player": "Omitted"}``. Purely presentational -- annotations
     #: never affect the model, the projection or the simulation.
     annotations: Dict[str, str] = field(default_factory=dict)
+    #: Also score the scenario with walk-forward cross-validation. Slower (one
+    #: fit per fold), but a single held-out season is a noisy way to rank
+    #: scenarios whose differences are small -- which these are. The results
+    #: page ranks by this when it is present.
+    cross_validate: bool = False
+    cv_min_train_seasons: int = 7
     features: Dict[str, Any] = field(default_factory=dict)
     notes: str = ""
 
@@ -169,6 +175,36 @@ def run_experiment(
             except Exception:  # a baseline failure must never sink the main run
                 pass
 
+    # -- Cross-validation, when the scenario asks for it ---------------
+    if config.cross_validate:
+        # Every season with a known result, not just the training window. The
+        # extra early seasons matter: history features look back a season or
+        # two, so cutting them off would quietly handicap the scenarios that
+        # use them. The season being projected has no votes and is excluded.
+        counted = df.groupby("season")["votes"].apply(lambda s: s.notna().all())
+        scored_seasons = [
+            int(season) for season, complete in counted.items()
+            if complete and int(season) not in set(predict_seasons)
+        ]
+        cv_frame = df[df["season"].isin(scored_seasons)]
+
+        def factory():
+            return config.build_model()
+
+        try:
+            folds = rolling_origin_cv(
+                cv_frame, factory, min_train_seasons=config.cv_min_train_seasons
+            )
+            results["cv_folds"] = folds
+            results["cv_metrics"] = {
+                **{k: float(v) for k, v in summarise_cv(folds).items()},
+                "n_folds": int(len(folds)),
+                "fold_seasons": [int(s) for s in folds["fold_test_season"]],
+            }
+        except ValueError as error:
+            # Not enough seasons to fold. Say so rather than failing the run.
+            results["cv_metrics"] = {"error": str(error)}
+
     # -- Step 3: the unknown season -----------------------------------
     if predict_seasons:
         future = df[df["season"].isin(predict_seasons)]
@@ -247,6 +283,7 @@ def write_outputs(
         "test_seasons": results["test_seasons"],
         "predict_seasons": results["predict_seasons"],
         "holdout_metrics": results.get("holdout_metrics"),
+        "cv_metrics": results.get("cv_metrics"),
         "comparison": results.get("comparison"),
         "optimisation": getattr(model, "optimisation_", None),
     }

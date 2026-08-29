@@ -96,10 +96,47 @@ time on ground and the rest), plus:
   loss, so the key stats get an explicit interaction term.
 - **Share of team** — a player's share of their team's disposals, goals and
   contested possessions.
-- **Composites** — AFL Fantasy points, goal involvements, clean disposals.
+- **Composites** — AFL Fantasy points (the published formula), goal involvements,
+  clean disposals, and a contested-work score that weights hard-won possession
+  above cheap possession.
+
+Three further groups are off by default, because they need history loaded before
+the training window and cost something in complexity. Each has a scenario built
+around it:
+
+- **Past polling** — how much a player polled in *previous* seasons: last year's
+  votes, career votes, votes per game. Umpires reward the same kinds of players
+  year after year, and this is the second-strongest single correlate with votes
+  in the data after disposals (0.29 against 0.37).
+- **Recent form** — a decaying average of a player's recent matches, so someone
+  in a hot patch starts ahead. Lagged by one game, halflife four games.
+- **Interactions** — products of paired features, plus flags for leading the
+  match in a statistic. The model scores players as a straight sum, so it cannot
+  otherwise express "had a lot of the ball *and* kicked goals" as distinct from
+  the sum of the two.
 
 All of it is configurable through `FeatureConfig`, so turning a group off is one
 line in an experiment file.
+
+### What the history features must never do
+
+Brownlow votes are not published until count night. A model sitting at round 12
+does **not** know what anyone polled in round 11 of the same season. So the past
+polling features use completed seasons only — never the current one — and the
+test suite asserts it: changing a season's votes must not alter any feature value
+in that same season.
+
+Form features are different, and may use earlier rounds of the same season, since
+match statistics are public the moment a game ends. They are still lagged by one
+match, so a game never sees itself.
+
+### On SuperCoach and AFL Player Ratings
+
+Both are proprietary Champion Data products and are not in this dataset, so
+neither is reproduced here. AFL Fantasy points *are* computed exactly, from the
+published formula. The `contested_score` and the form rating are proxies built
+from public statistics — useful, but they are not those products and should not
+be read as them.
 
 ## Does it work?
 
@@ -223,9 +260,79 @@ reading the metrics back off disk.
 ```
 
 ```bash
-brownlow run experiments/rank-model.json --seasons 2015-2026
+# History features look back a season or two, so load from 2013.
+brownlow run experiments/rank-model.json --seasons 2013-2026
 brownlow compare
 ```
+
+### The scenarios
+
+Eight are shipped. Each is one hypothesis about what earns votes, and each is a
+file you can copy and change.
+
+| Scenario | The idea |
+| --- | --- |
+| `rank-model` | Match statistics only. The default starting point. |
+| `interactions` | Adds products of paired features and "led the match" flags, so the model can express combinations rather than only sums. |
+| `past-polling` | Adds how much each player polled in **previous** seasons. |
+| `recent-form` | Adds a decaying average of recent matches, lagged one game. |
+| `everything` | All of the above at once, more heavily regularised. |
+| `midfield-focus` | Ball-winning and midfield work only — blind to goals, marking and ruck work. |
+| `counting-stats-only` | Raw counting stats, no within-match comparisons. An ablation. |
+| `logistic-baseline` | The simpler score-then-rank approach. |
+
+### What they actually showed
+
+Six-fold walk-forward cross-validation, test seasons 2020–2025:
+
+| Scenario | Features | Top-1 | Top-3 recall | Log-lik / match |
+| --- | --- | --- | --- | --- |
+| `interactions` | 67 | 0.5714 | **0.6544** | −5.397 |
+| `everything` | 78 | 0.5620 | 0.6534 | **−5.369** |
+| `past-polling` | 59 | 0.5682 | 0.6505 | −5.423 |
+| `recent-form` | 58 | 0.5712 | 0.6500 | −5.375 |
+| `rank-model` | 53 | **0.5726** | 0.6489 | −5.417 |
+| `logistic-baseline` | 53 | 0.5610 | 0.6423 | −5.789 |
+| `counting-stats-only` | 30 | 0.5565 | 0.6394 | −5.513 |
+| `midfield-focus` | 34 | 0.5560 | 0.6375 | −5.523 |
+
+**The honest headline is that the extra signals barely move it.** Paired across
+the six folds, against `rank-model`:
+
+| Scenario | Mean gain in top-3 recall | Folds better / worse | t |
+| --- | --- | --- | --- |
+| `interactions` | +0.55 pp | 4 / 1 | 2.61 |
+| `everything` | +0.45 pp | 5 / 1 | 1.94 |
+| `past-polling` | +0.16 pp | 4 / 0 | 2.74 |
+| `recent-form` | +0.11 pp | 4 / 2 | 0.29 |
+
+With six folds, |t| has to clear about 2.57 to mean anything at p=0.05. So
+`interactions` and `past-polling` are real but small, `everything` and
+`recent-form` are not distinguishable from noise.
+
+That is worth sitting with, because prior polling **is** strongly correlated with
+votes on its own — 0.29 against disposals' 0.37, the second-best single
+correlate in the data. It still adds almost nothing to the model. The reason is
+that the correlation is mostly not new information: players who polled last year
+are polling this year *because they are still playing well*, and this match's
+statistics already say so. A marginal correlation and an incremental contribution
+are different things, and this is a clean example of the gap.
+
+`midfield-focus` scoring below `counting-stats-only` is the other useful result:
+throwing away goals and marking costs more than the midfield emphasis wins back,
+so the Brownlow is not purely a midfielder's award.
+
+### Ranking scenarios honestly
+
+Set `"cross_validate": true` in a config and the run also scores itself with
+walk-forward CV, storing the result in `metrics.json`. The results page ranks by
+that when it is there, and opens on the best model.
+
+This matters more than it sounds. On the single held-out season of 2025,
+`recent-form` looks like the best scenario; across six folds it is
+indistinguishable from doing nothing. One season is far too noisy to separate
+models that differ by fractions of a percentage point, and ranking on it would
+have crowned the wrong one.
 
 Each run writes four things to `data/output/<name>/`:
 

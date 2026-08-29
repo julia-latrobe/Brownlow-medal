@@ -1,0 +1,28 @@
+{
+  "name": "midfield-focus",
+  "model": "plackett_luce",
+  "alpha": 1.0,
+  "train_seasons": "2015-2024",
+  "test_seasons": "2025",
+  "predict_seasons": "2026",
+  "n_simulations": 10000,
+  "seed": 0,
+  "ineligible": [],
+  "annotations": {},
+  "compare_baseline": true,
+  "cross_validate": true,
+  "cv_min_train_seasons": 7,
+  "features": {
+    "base_stats": [
+      "kicks", "handballs", "disposals", "contested_possessions",
+      "uncontested_possessions", "clearances", "inside_50s", "tackles",
+      "clangers", "marks", "time_on_ground"
+    ],
+    "within_match_stats": [
+      "disposals", "contested_possessions", "clearances", "tackles", "inside_50s"
+    ],
+    "win_interactions": ["disposals", "contested_possessions"],
+    "include_fantasy": false
+  },
+  "notes": "Midfielders only. Sees ball-winning and midfield work - possessions, clearances, tackles, inside 50s - and is blind to goals, marking and ruck work. Tests how much of the Brownlow is simply an award for the best midfielder. Expect it to do worse; the interesting question is by how little."
+}

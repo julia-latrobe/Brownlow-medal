@@ -10,6 +10,8 @@
   "ineligible": [],
   "annotations": {},
   "compare_baseline": true,
+  "cross_validate": true,
+  "cv_min_train_seasons": 7,
   "features": {},
   "notes": "Weighted logistic regression, ranked to 3-2-1. Simpler comparison point."
 }

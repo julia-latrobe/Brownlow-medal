@@ -188,7 +188,8 @@ def cmd_run(args) -> int:
 
 
 def cmd_report(args) -> int:
-    page = render_site(output_root=args.output_dir, docs_path=args.docs_path)
+    page = render_site(output_root=args.output_dir, docs_path=args.docs_path,
+                       detail_players=args.detail_players)
     print(f"Report page written to {page}")
     print("Commit it and GitHub Pages will publish the updated results.")
     return 0
@@ -281,6 +282,8 @@ def build_parser() -> argparse.ArgumentParser:
     report = subparsers.add_parser("report", help="Rebuild docs/index.html from every run")
     report.add_argument("--output-dir", type=Path, help="Folder holding the experiment runs")
     report.add_argument("--docs-path", type=Path, help="Where to write index.html")
+    report.add_argument("--detail-players", type=int, default=100,
+                        help="How many players keep round-by-round detail (page size)")
     report.set_defaults(func=cmd_report)
 
     compare = subparsers.add_parser("compare", help="Compare every experiment run so far")
