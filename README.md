@@ -267,7 +267,7 @@ brownlow compare
 
 ### The scenarios
 
-Eight are shipped. Each is one hypothesis about what earns votes, and each is a
+Eleven are shipped. Each is one hypothesis about what earns votes, and each is a
 file you can copy and change.
 
 | Scenario | The idea |
@@ -280,6 +280,36 @@ file you can copy and change.
 | `midfield-focus` | Ball-winning and midfield work only — blind to goals, marking and ruck work. |
 | `counting-stats-only` | Raw counting stats, no within-match comparisons. An ablation. |
 | `logistic-baseline` | The simpler score-then-rank approach. |
+| `position` | Adds where each player plays, derived from their statistical profile, and its interactions with the key stats. |
+| `ensemble` | Pools the rank model with a gradient-boosted ranker. Needs the optional `boost` extra. |
+| `player-adjusted` | Gives each player a standing adjustment for how the umpires have actually treated him. See below. |
+
+#### The player-adjusted scenario
+
+Two players can produce the same line in the stats and poll very differently.
+Some are consistently rewarded beyond what their numbers earn; others are
+consistently marked down. Across 244 held-out player-seasons, how far a player's
+total sat from his prediction one season correlates **+0.32** with his next
+(p < 0.00001), so this is a trait rather than noise.
+
+`player-adjusted` fits the ordinary rank model, measures that standing gap for
+every player, and carries part of it forward — half by default, discounted
+further for players seen in only a season or two. On walk-forward seasons it cuts
+the error on a top-40 player's season total by about a tenth of a vote, with the
+gain concentrated in the most recent seasons, and leaves per-match accuracy
+unchanged. `strength: 0.0` in `model_options` turns it off exactly.
+
+What separates the two groups is not position, team success or volume — those
+explain under 4% of it. It is where the ball is won. Players rewarded beyond
+their numbers do more of their work in contest, at clearances and driving the
+ball inside 50; they also give away more free kicks and register more clangers,
+which is the tell, since neither is good football. Both mean being in front of
+the umpire at close range. The players marked down accumulate in space:
+uncontested possessions and marks, away from the whistle.
+
+The scenario assumes umpires who voted one way before will vote the same way
+again. Where the voting process itself changes, that assumption is weaker than
+the backtest suggests, and `rank-model` is the more conservative choice.
 
 ### What they actually showed
 

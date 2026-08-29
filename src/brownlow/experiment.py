@@ -56,16 +56,25 @@ def _ensemble(*args, **kwargs):
     return EnsembleModel(*args, **kwargs)
 
 
+def _player_adjusted(*args, **kwargs):
+    """Imported here to keep the module import graph shallow."""
+    from brownlow.player_bias import PlayerAdjustedModel
+
+    return PlayerAdjustedModel(*args, **kwargs)
+
+
 MODELS = {
     "plackett_luce": PlackettLuceModel,
     "logistic": WeightedLogisticModel,
     "ensemble": _ensemble,
+    "player_adjusted": _player_adjusted,
 }
 
 _FRIENDLY_NAMES = {
     "plackett_luce": "Rank model (Plackett-Luce)",
     "logistic": "Weighted logistic",
     "ensemble": "Ensemble (rank + boosted)",
+    "player_adjusted": "Rank model with player adjustments",
 }
 
 
@@ -98,13 +107,25 @@ class ExperimentConfig:
     cross_validate: bool = False
     cv_min_train_seasons: int = 7
     features: Dict[str, Any] = field(default_factory=dict)
+    #: Settings passed straight to the model, for the knobs that belong to one
+    #: model rather than to all of them -- ``strength`` for the player-adjusted
+    #: model, ``n_estimators`` for the ensemble. Anything the chosen model does
+    #: not accept is an error rather than a silent no-op.
+    model_options: Dict[str, Any] = field(default_factory=dict)
     notes: str = ""
 
     def build_model(self):
         if self.model not in MODELS:
             raise ValueError(f"Unknown model {self.model!r}. Options: {sorted(MODELS)}")
         feature_config = FeatureConfig(**self.features) if self.features else FeatureConfig()
-        return MODELS[self.model](alpha=self.alpha, feature_config=feature_config)
+        try:
+            return MODELS[self.model](alpha=self.alpha, feature_config=feature_config,
+                                      **self.model_options)
+        except TypeError as error:
+            raise TypeError(
+                f"model_options {sorted(self.model_options)} do not fit "
+                f"model {self.model!r}: {error}"
+            ) from error
 
     def to_json(self, path: Path) -> Path:
         path = Path(path)
