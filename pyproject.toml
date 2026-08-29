@@ -26,6 +26,9 @@ dependencies = [
 # Reading the AFL Tables .rda mirror needs pyreadr; keep it optional so the
 # model itself installs cleanly anywhere.
 data = ["pyreadr>=0.4", "requests>=2.28"]
+# The gradient-boosted half of the ensemble scenario. Optional because it is
+# a compiled package, and nothing else in the project needs it.
+boost = ["lightgbm>=4.0"]
 dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.1"]
 
 [project.scripts]
