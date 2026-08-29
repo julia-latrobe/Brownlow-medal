@@ -41,19 +41,39 @@ class TestSimulateSeason:
             expected.loc[common].to_numpy(), merged.loc[common].to_numpy(), atol=0.35
         )
 
-    def test_the_corrections_shift_the_simulated_mean(self, simulated):
-        """And that the corrected simulation is genuinely a different one.
+    def test_the_corrections_widen_without_moving_the_centre(self, simulated):
+        """The corrected simulation must differ in spread and only in spread.
 
-        Widening the spread pulls the leaders back towards the field, so the
-        simulated mean drifts off the closed-form expectation. That is why the
-        published projection is ``expected_votes`` and never ``mean_votes``.
+        Widening on its own drags the leaders towards the field, because
+        softening the probabilities takes their share of the three votes and a
+        match still awards six. Recentring puts that back. So against the plain
+        simulation the ranges should grow while the means stay put.
         """
         predictions, corrected = simulated
         plain = simulate_season(predictions, n_simulations=2000, seed=1,
                                 temperature=1.0, player_shock=0.0)
-        pair = plain.set_index("player")["mean_votes"].rename("plain").to_frame().join(
-            corrected.set_index("player")["mean_votes"].rename("corrected"), how="inner")
-        assert not np.allclose(pair["plain"], pair["corrected"], atol=0.05)
+        pair = plain.set_index("player")[["mean_votes", "p10_votes", "p90_votes"]].join(
+            corrected.set_index("player")[["mean_votes", "p10_votes", "p90_votes"]],
+            lsuffix="_plain", rsuffix="_corrected", how="inner")
+
+        np.testing.assert_allclose(pair["mean_votes_plain"].to_numpy(),
+                                   pair["mean_votes_corrected"].to_numpy(), atol=0.35)
+        plain_width = pair["p90_votes_plain"] - pair["p10_votes_plain"]
+        wide_width = pair["p90_votes_corrected"] - pair["p10_votes_corrected"]
+        busy = plain_width > 0
+        assert wide_width[busy].mean() > plain_width[busy].mean()
+
+    def test_the_range_sits_evenly_around_the_projection(self, simulated):
+        """The fault this fixes looked like a long tail below every player and
+        almost none above."""
+        predictions, corrected = simulated
+        projected = predictions.groupby("player")["expected_votes"].sum()
+        board = corrected.set_index("player")
+        common = projected.index.intersection(board.index)
+        busy = projected.loc[common] > 1.0
+        below = (projected.loc[common] - board.loc[common, "p10_votes"])[busy]
+        above = (board.loc[common, "p90_votes"] - projected.loc[common])[busy]
+        assert below.mean() == pytest.approx(above.mean(), rel=0.25)
 
     def test_total_votes_awarded_is_six_per_match(self, simulated):
         predictions, summary = simulated

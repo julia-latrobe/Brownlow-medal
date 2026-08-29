@@ -181,6 +181,96 @@ class PlayerAdjustedModel(BaseVoteModel):
         out["predicted_votes"] = allocate_votes(scores, index)
         return out
 
+    def predict_unadjusted(self, df: pd.DataFrame) -> pd.DataFrame:
+        """What the model would say with the umpires' standing view removed.
+
+        The pair of projections is the useful output. One says where a player
+        lands on his statistics alone; the other says where he lands once how
+        the umpires have actually treated him is allowed for. The gap between
+        them is the part of his season that is reputation rather than output,
+        and it is worth seeing as a movement rather than hidden inside a range.
+        """
+        if self.base_ is None:
+            raise ValueError("Model is not fitted yet.")
+        return self.base_.predict(df)
+
+    def predict_at_strength(self, df: pd.DataFrame, strength: float) -> pd.DataFrame:
+        """Predict with a different amount of the adjustment applied.
+
+        No refitting: the measured gaps are already stored, so this only
+        rescales them. ``0.0`` is the plain rank model, ``1.0`` the whole
+        measured adjustment.
+        """
+        if self.base_ is None:
+            raise ValueError("Model is not fitted yet.")
+        if self.strength == 0.0 and strength != 0.0:
+            raise ValueError(
+                "This model was fitted with strength 0.0, so it measured no "
+                "adjustments to rescale. Refit with a strength above zero."
+            )
+        keep = self.offsets_
+        scale = 0.0 if self.strength == 0.0 else float(strength) / self.strength
+        try:
+            self.offsets_ = {k: v * scale for k, v in keep.items()}
+            return self.predict(df)
+        finally:
+            self.offsets_ = keep
+
+    def bias_band(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Where each player lands with none of the umpires' standing view
+        applied, and with all of it.
+
+        This is a different question from the usual range. The simulated range
+        asks how the votes might fall if we have the players right. This asks
+        what happens if we have the umpires wrong -- if a player who has been
+        rewarded beyond his statistics for years either keeps being rewarded or
+        stops. It is one-sided by nature: a player carrying a standing credit
+        has room above him and little below, and one marked down has the
+        reverse.
+
+        For 2026 the distinction is live. The umpires now see the statistics
+        before voting, which had never been true of any season the adjustment
+        was measured on. Whether that leaves their habits intact, sharpens them
+        or dissolves them is not knowable in advance, so both ends are shown
+        rather than a single answer.
+        """
+        keys = [c for c in ("season", "player", "team")
+                if c in df.columns or c == "player"]
+        ends = {}
+        for label, strength in (("none", 0.0), ("all", 1.0)):
+            board = self.season_totals(self.predict_at_strength(df, strength))
+            ends[label] = board.set_index(
+                [c for c in keys if c in board.columns])["expected_votes"]
+        low = np.minimum(ends["none"], ends["all"])
+        high = np.maximum(ends["none"], ends["all"])
+        out = pd.DataFrame({
+            "expected_votes_on_statistics": ends["none"],
+            "expected_votes_full_umpire_bias": ends["all"],
+            "bias_low": low, "bias_high": high,
+            "bias_votes": ends["all"] - ends["none"],
+        }).reset_index()
+        return out.sort_values("expected_votes_full_umpire_bias",
+                               ascending=False).reset_index(drop=True)
+
+    def bias_overlay(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Where each player lands before and after the umpires' standing view.
+
+        Returns one row per player: the projection from his statistics alone,
+        the projection with the adjustment applied, and the movement between
+        them. Positive movement means the umpires have historically given this
+        player more than his numbers earn.
+        """
+        plain = self.base_.season_totals(self.predict_unadjusted(df))
+        adjusted = self.season_totals(self.predict(df))
+        keys = [c for c in ("season", "player", "team") if c in plain.columns]
+        merged = plain[keys + ["expected_votes"]].merge(
+            adjusted[keys + ["expected_votes"]], on=keys,
+            suffixes=("_on_statistics", "_with_umpire_bias"))
+        merged["bias_votes"] = (merged["expected_votes_with_umpire_bias"]
+                                - merged["expected_votes_on_statistics"])
+        return merged.sort_values("expected_votes_with_umpire_bias",
+                                  ascending=False).reset_index(drop=True)
+
     # -- inspection ----------------------------------------------------
     def adjustment_table(self) -> pd.DataFrame:
         """Who the model has learned to push up or down, biggest effect first.

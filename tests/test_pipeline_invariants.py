@@ -156,9 +156,15 @@ class TestSimulationAgreesWithTheModel:
         The median of an even number of them can land on a midpoint, which is
         numpy averaging the two middle values rather than anything awarding half
         a vote -- so what must hold is that twice the median is whole.
+
+        Checked on the raw simulation. The published one slides each player's
+        range onto his projection, which is a real number, so its percentiles
+        are not whole either.
         """
         results, _, _ = completed_run
-        medians = results["simulation"]["median_votes"].to_numpy()
+        raw = simulate_season(results["predictions"], n_simulations=400, seed=0,
+                              recentre=False)
+        medians = raw["median_votes"].to_numpy()
         np.testing.assert_allclose(2.0 * medians, np.round(2.0 * medians))
 
     def test_an_ineligible_player_cannot_win(self, completed_run):

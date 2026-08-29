@@ -8,6 +8,27 @@ Notable changes to this project. Format follows
 
 ### Added
 
+- **An `umpire-overlay` scenario**, whose range shows the umpires' standing view
+  rather than the randomness of the count. The low end is where a player lands
+  on his statistics alone, the high end where he lands if the umpires keep
+  treating him as they have for years — one-sided by nature, and for 2026 the
+  live question, since umpires now see the statistics before voting and no
+  season the adjustment was measured on worked that way. Cripps spans 20.8 to
+  27.2 votes, Newcombe 17.2 to 22.7, Gawn 17.0 to 22.4; Ashcroft moves 0.2.
+  Projections and ranking are identical to `player-adjusted`, so the two read
+  side by side. Adds `interval` to an experiment config, and
+  `predict_at_strength` / `bias_band` / `bias_overlay` to the model.
+
+### Fixed
+
+- **The widened simulated range was centred too low.** Softening the
+  probabilities moves the leaders' share of the three votes to the field, since
+  a match always awards six, so every leading player drifted down — five votes
+  for a runaway favourite. It read as a long tail below each of them and almost
+  none above. Ranges now slide back onto the projection with their shape intact:
+  the simulated mean was out by 1.9 votes on a top-40 player and is now out by
+  0.8, matching the projection it sits on, with none of the width given back.
+
 - **Honest confidence on the simulated results.** The season simulation was
   stating ranges far tighter than the evidence supports: measured on 240
   held-out player-seasons, a stated 95% range held the truth 84% of the time and
