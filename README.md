@@ -318,10 +318,13 @@ Six-fold walk-forward cross-validation, test seasons 2020–2025:
 | Scenario | Features | Top-1 | Top-3 recall | Log-lik / match |
 | --- | --- | --- | --- | --- |
 | `interactions` | 67 | 0.5714 | **0.6544** | −5.397 |
-| `everything` | 78 | 0.5620 | 0.6534 | **−5.369** |
+| `ensemble` | 90 | **0.5744** | 0.6534 | **−5.302** |
+| `everything` | 78 | 0.5620 | 0.6534 | −5.369 |
+| `player-adjusted` | 67 | 0.5730 | 0.6526 | −5.347 |
+| `position` | 101 | 0.5691 | 0.6522 | −5.355 |
 | `past-polling` | 59 | 0.5682 | 0.6505 | −5.423 |
 | `recent-form` | 58 | 0.5712 | 0.6500 | −5.375 |
-| `rank-model` | 53 | **0.5726** | 0.6489 | −5.417 |
+| `rank-model` | 53 | 0.5726 | 0.6489 | −5.417 |
 | `logistic-baseline` | 53 | 0.5610 | 0.6423 | −5.789 |
 | `counting-stats-only` | 30 | 0.5565 | 0.6394 | −5.513 |
 | `midfield-focus` | 34 | 0.5560 | 0.6375 | −5.523 |
@@ -351,6 +354,20 @@ are different things, and this is a clean example of the gap.
 `midfield-focus` scoring below `counting-stats-only` is the other useful result:
 throwing away goals and marking costs more than the midfield emphasis wins back,
 so the Brownlow is not purely a midfielder's award.
+
+The same caution applies to the three later scenarios. `ensemble`, `position` and
+`player-adjusted` all sit within about two tenths of a percentage point of
+`interactions` on top-3 recall, which is inside the noise across six folds — none
+of them is separated from it on that measure. Where they do earn their place is
+elsewhere: `ensemble` and `player-adjusted` on log-likelihood, which reads how
+well the whole spread of probabilities fits rather than only whether the top
+three were named; `position` on naming a club's leading vote-getter; and
+`player-adjusted` on how close a season total lands, where it is about a tenth of
+a vote better per top-40 player.
+
+That split is worth noticing on its own. Picking the right three players in a
+match and estimating how many votes a player finishes with are different jobs,
+and a scenario can be better at one while indistinguishable at the other.
 
 ### Ranking scenarios honestly
 
