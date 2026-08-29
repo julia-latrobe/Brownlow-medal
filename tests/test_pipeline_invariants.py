@@ -127,11 +127,19 @@ class TestSimulationAgreesWithTheModel:
             6 * matches, rel=1e-6)
 
     def test_simulated_means_land_on_the_expected_votes(self, completed_run):
-        """Monte Carlo and the closed form must describe the same model."""
+        """Monte Carlo and the closed form must describe the same model.
+
+        With the confidence corrections off, that is: they widen the simulated
+        distribution on purpose, so the corrected mean sits nearer the field
+        than the closed form does. The projection published on the leaderboard
+        is ``expected_votes``, which is the closed form and is unaffected.
+        """
         results, _, _ = completed_run
         expected = results["predictions"].groupby(["player", "team"])[
             "expected_votes"].sum().rename("expected")
-        simulated = results["simulation"].set_index(["player", "team"])["mean_votes"]
+        uncorrected = simulate_season(results["predictions"], n_simulations=400,
+                                      seed=0, temperature=1.0, player_shock=0.0)
+        simulated = uncorrected.set_index(["player", "team"])["mean_votes"]
         joined = pd.concat([expected, simulated], axis=1).dropna()
         assert len(joined) > 0
         np.testing.assert_allclose(joined["expected"], joined["mean_votes"], atol=0.5)
@@ -143,10 +151,15 @@ class TestSimulationAgreesWithTheModel:
         assert (summary["median_votes"] <= summary["p90_votes"]).all()
 
     def test_simulated_votes_are_whole_numbers(self, completed_run):
-        """Each simulated season awards real 3-2-1s, so totals are integers."""
+        """Each simulated season awards real 3-2-1s, so every total is an integer.
+
+        The median of an even number of them can land on a midpoint, which is
+        numpy averaging the two middle values rather than anything awarding half
+        a vote -- so what must hold is that twice the median is whole.
+        """
         results, _, _ = completed_run
         medians = results["simulation"]["median_votes"].to_numpy()
-        np.testing.assert_allclose(medians, np.round(medians))
+        np.testing.assert_allclose(2.0 * medians, np.round(2.0 * medians))
 
     def test_an_ineligible_player_cannot_win(self, completed_run):
         results, _, _ = completed_run

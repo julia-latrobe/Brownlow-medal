@@ -22,14 +22,38 @@ class TestSimulateSeason:
         assert (summary["win_probability"] >= 0).all()
 
     def test_simulated_votes_match_the_expected_votes(self, simulated):
-        """Monte Carlo means should land on the closed-form expectation."""
-        predictions, summary = simulated
+        """The sampler must reproduce the model it is sampling from.
+
+        Checked with the confidence corrections switched off, because that is
+        the claim being made: Gumbel-top-k draws from exactly the fitted
+        Plackett-Luce marginals. With the corrections on, the simulation is
+        deliberately sampling from a wider distribution than the fitted one, so
+        its mean is not meant to land on the closed form -- see
+        ``test_the_corrections_shift_the_simulated_mean`` below.
+        """
+        predictions, _ = simulated
+        summary = simulate_season(predictions, n_simulations=2000, seed=1,
+                                  temperature=1.0, player_shock=0.0)
         expected = predictions.groupby("player")["expected_votes"].sum()
         merged = summary.set_index("player")["mean_votes"]
         common = expected.index.intersection(merged.index)
         np.testing.assert_allclose(
             expected.loc[common].to_numpy(), merged.loc[common].to_numpy(), atol=0.35
         )
+
+    def test_the_corrections_shift_the_simulated_mean(self, simulated):
+        """And that the corrected simulation is genuinely a different one.
+
+        Widening the spread pulls the leaders back towards the field, so the
+        simulated mean drifts off the closed-form expectation. That is why the
+        published projection is ``expected_votes`` and never ``mean_votes``.
+        """
+        predictions, corrected = simulated
+        plain = simulate_season(predictions, n_simulations=2000, seed=1,
+                                temperature=1.0, player_shock=0.0)
+        pair = plain.set_index("player")["mean_votes"].rename("plain").to_frame().join(
+            corrected.set_index("player")["mean_votes"].rename("corrected"), how="inner")
+        assert not np.allclose(pair["plain"], pair["corrected"], atol=0.05)
 
     def test_total_votes_awarded_is_six_per_match(self, simulated):
         predictions, summary = simulated

@@ -46,7 +46,11 @@ from brownlow.evaluate import (
 )
 from brownlow.features import FeatureConfig
 from brownlow.model import PlackettLuceModel, WeightedLogisticModel
-from brownlow.simulate import simulate_season
+from brownlow.simulate import (
+    DEFAULT_PLAYER_SHOCK,
+    DEFAULT_TEMPERATURE,
+    simulate_season,
+)
 
 
 def _ensemble(*args, **kwargs):
@@ -112,6 +116,14 @@ class ExperimentConfig:
     #: model, ``n_estimators`` for the ensemble. Anything the chosen model does
     #: not accept is an error rather than a silent no-op.
     model_options: Dict[str, Any] = field(default_factory=dict)
+    #: How much to soften the fitted probabilities before simulating, and how
+    #: uncertain to be about the players themselves. Both affect only the
+    #: simulated ranges and probabilities, never the projected votes or the
+    #: order of the leaderboard. See :mod:`brownlow.simulate` for what these
+    #: were fitted against; ``1.0`` and ``0.0`` restore the uncorrected
+    #: behaviour.
+    simulation_temperature: float = DEFAULT_TEMPERATURE
+    player_shock: float = DEFAULT_PLAYER_SHOCK
     notes: str = ""
 
     def build_model(self):
@@ -248,6 +260,8 @@ def run_experiment(
                 n_simulations=config.n_simulations,
                 ineligible=config.ineligible,
                 seed=config.seed,
+                temperature=config.simulation_temperature,
+                player_shock=config.player_shock,
             )
             # Join on name and club together: joining on name alone would
             # give two players who share a name each other's numbers.

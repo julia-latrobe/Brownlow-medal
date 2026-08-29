@@ -8,6 +8,17 @@ Notable changes to this project. Format follows
 
 ### Added
 
+- **Honest confidence on the simulated results.** The season simulation was
+  stating ranges far tighter than the evidence supports: measured on 240
+  held-out player-seasons, a stated 95% range held the truth 84% of the time and
+  a 50% range held it 46%. Two corrections, both fitted on held-out seasons and
+  both in `simulate.py`: `simulation_temperature` (default 0.8) softens the
+  fitted probabilities, and `player_shock` (default 0.5) allows that the model's
+  read on a player may simply be wrong, drawn once per simulated season and held
+  across that player's matches. Together they bring coverage to 96% and 58%.
+  Neither changes a projected vote total or the order of the leaderboard — those
+  come from the exact marginals, which no simulation touches. Both are settable
+  per experiment; 1.0 and 0.0 restore the previous behaviour.
 - **A `player-adjusted` scenario**, giving each player a standing adjustment for
   how the umpires have actually treated him rather than how his statistics read.
   A player's gap between actual and predicted votes one season correlates +0.32
