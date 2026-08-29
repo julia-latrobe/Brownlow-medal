@@ -7,6 +7,7 @@ model recovers a signal we planted ourselves.
 """
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from brownlow.model import (
@@ -180,6 +181,44 @@ class TestPlackettLuceModel:
         after = reloaded.predict(small_season)["expected_votes"].to_numpy()
 
         np.testing.assert_allclose(before, after)
+
+    def test_predict_scores_comes_back_in_the_callers_row_order(self, small_season):
+        """Scoring sorts rows internally; the caller must not have to know that.
+
+        Form features order rows by career to compute a rolling average. If that
+        ordering leaks out, predict_scores returns correct scores attached to the
+        wrong players -- which looks like a broken model, not a broken join.
+        """
+        from brownlow.features import FeatureConfig
+
+        for config in (FeatureConfig(), FeatureConfig(include_form=True)):
+            model = PlackettLuceModel(feature_config=config).fit(small_season)
+            scores = model.predict_scores(small_season)
+
+            # The same rows, shuffled, must produce the same scores per row.
+            shuffled = small_season.sample(frac=1.0, random_state=5)
+            shuffled_scores = model.predict_scores(shuffled)
+
+            reference = pd.Series(scores, index=small_season.index)
+            np.testing.assert_allclose(
+                shuffled_scores,
+                reference.reindex(shuffled.index).to_numpy(),
+                atol=1e-9,
+            )
+
+    def test_predict_scores_agrees_with_predict(self, small_season):
+        """The standalone scores must match the ones predict() used."""
+        from brownlow.features import FeatureConfig
+
+        model = PlackettLuceModel(
+            feature_config=FeatureConfig(include_form=True)).fit(small_season)
+        predictions = model.predict(small_season)
+        scores = pd.Series(model.predict_scores(small_season), index=small_season.index)
+        np.testing.assert_allclose(
+            predictions["score"].to_numpy(),
+            scores.reindex(predictions.index).to_numpy(),
+            atol=1e-9,
+        )
 
     def test_coefficient_table_is_sorted_by_effect_size(self, small_season):
         table = PlackettLuceModel().fit(small_season).coefficient_table()

@@ -271,10 +271,15 @@ def add_form_features(df: pd.DataFrame, halflife: float = 4.0) -> pd.DataFrame:
         return out
 
     out["_player_key"] = player_identity(out)
+    # Computing a rolling average needs the rows in career order, but callers
+    # expect their rows back in the order they handed them over -- anything else
+    # silently misaligns the features from the players they belong to. Remember
+    # the incoming order and restore it before returning.
+    out["_input_order"] = np.arange(len(out))
     order = ["_player_key", "season"]
     if "round_number" in out.columns:
         order.append("round_number")
-    out = out.sort_values(order).reset_index(drop=True)
+    out = out.sort_values(order)
 
     grouped = out.groupby("_player_key", sort=False)
     for stat in FORM_STATS:
@@ -289,7 +294,8 @@ def add_form_features(df: pd.DataFrame, halflife: float = 4.0) -> pd.DataFrame:
         )
 
     out["games_played_before"] = grouped.cumcount().astype(float)
-    return out.drop(columns=["_player_key"])
+    out = out.sort_values("_input_order")
+    return out.drop(columns=["_player_key", "_input_order"])
 
 
 def _within_match_zscore(values: pd.Series, match_id: pd.Series) -> np.ndarray:
