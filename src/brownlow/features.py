@@ -118,6 +118,13 @@ class FeatureConfig:
     #: its features, so "led the game for disposals" is something it cannot
     #: express from the raw count alone.
     include_match_best: bool = False
+    #: Playing position, derived from statistical profile, plus its interactions
+    #: with the key stats. Midfielders take 66% of the votes from 29% of the
+    #: players, so the same statistic means very different things by role.
+    include_position: bool = False
+    position_interactions: Sequence[str] = (
+        "disposals", "goals", "contested_possessions", "marks", "tackles",
+    )
     #: Prior-season and career Brownlow polling. Needs a season or two of
     #: history loaded before the training window to be worth anything.
     include_history: bool = False
@@ -243,7 +250,17 @@ def add_history_features(df: pd.DataFrame) -> pd.DataFrame:
         "career_votes_before", "career_votes_per_game_before", "seasons_before",
         "has_polled_before",
     ]
+    # Transforming an already-transformed frame is a reasonable thing for a
+    # caller to do. Without this the merge would suffix the new columns _x/_y
+    # and the features would silently go missing under their expected names.
+    out = out.drop(columns=[c for c in columns if c != "_player_key" and c != "season"
+                            and c in out.columns])
+    # merge() returns a fresh RangeIndex. A left merge keeps row order, so the
+    # caller's index can be put straight back -- and it must be, because callers
+    # realign on it. Losing it here silently turns their scores into NaN.
+    original_index = out.index
     out = out.merge(per_season[columns], on=["_player_key", "season"], how="left")
+    out.index = original_index
     return out.drop(columns=["_player_key"])
 
 
@@ -279,7 +296,13 @@ def add_form_features(df: pd.DataFrame, halflife: float = 4.0) -> pd.DataFrame:
     order = ["_player_key", "season"]
     if "round_number" in out.columns:
         order.append("round_number")
-    out = out.sort_values(order)
+    # match_id completes the ordering. Without it two rows for the same player in
+    # the same round tie, and a tie is broken by whatever order the rows happened
+    # to arrive in -- which makes the rolling average depend on the caller's row
+    # order rather than on the player's career.
+    if "match_id" in out.columns:
+        order.append("match_id")
+    out = out.sort_values(order, kind="stable")
 
     grouped = out.groupby("_player_key", sort=False)
     for stat in FORM_STATS:
@@ -336,6 +359,10 @@ class FeatureBuilder:
 
         config = self.config
         out = add_derived_stats(df, config)
+        if config.include_position:
+            from brownlow.positions import add_position_features
+
+            out = add_position_features(out, stats=config.position_interactions)
         if config.include_form:
             out = add_form_features(out, halflife=config.form_halflife)
         if config.include_history:
@@ -351,6 +378,21 @@ class FeatureBuilder:
                      "clean_disposals", "free_kick_differential", "shots"):
             if stat in out.columns:
                 names.append(stat)
+
+        if config.include_position:
+            from brownlow.positions import POSITIONS
+
+            # One dummy is dropped: with a softmax taken within a match the four
+            # dummies would be collinear with the match itself.
+            for name in POSITIONS[1:]:
+                column = f"is_{name.lower()}"
+                if column in out.columns:
+                    names.append(column)
+            for stat in config.position_interactions:
+                for name in POSITIONS:
+                    column = f"{stat}_x_{name.lower()}"
+                    if column in out.columns:
+                        names.append(column)
 
         if config.include_form:
             for stat in FORM_STATS:

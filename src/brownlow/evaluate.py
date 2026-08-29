@@ -173,11 +173,83 @@ def season_metrics(predictions: pd.DataFrame, top_n: int = 10) -> Dict:
     }
 
 
+def team_leader_metrics(predictions: pd.DataFrame) -> Dict:
+    """How often do we name the right club's leading vote-getter?
+
+    A different and more forgiving question than picking the medallist: there are
+    eighteen of them a season rather than one, and it is the market most often
+    offered on a club-by-club basis.
+
+    Ties in the real count are common -- two players finishing level tops their
+    club together -- so naming either of them counts as correct.
+    """
+    known = predictions[predictions["votes"].notna()]
+    if known.empty:
+        raise ValueError("No matches with known votes to score against.")
+
+    column = "expected_votes" if "expected_votes" in known.columns else "predicted_votes"
+    keys = ["season", "team"] if "season" in known.columns else ["team"]
+    totals = known.groupby(keys + ["player"]).agg(
+        predicted=(column, "sum"), actual=("votes", "sum")
+    ).reset_index()
+
+    hits, ties, clubs = 0, 0, 0
+    for _, group in totals.groupby(keys):
+        if group["actual"].max() <= 0:
+            continue  # a club nobody polled for gives nothing to be right about
+        clubs += 1
+        picked = group.loc[group["predicted"].idxmax(), "player"]
+        leaders = set(group.loc[group["actual"] == group["actual"].max(), "player"])
+        hits += picked in leaders
+        ties += len(leaders) > 1
+
+    return {
+        "team_leader_accuracy": float(hits / clubs) if clubs else float("nan"),
+        "team_leaders_scored": int(clubs),
+        "team_leader_ties": int(ties),
+    }
+
+
+def declared_winner_round(votes_by_round: pd.DataFrame,
+                          rounds_remaining: Optional[pd.Series] = None) -> Optional[int]:
+    """The round after which the leader can no longer be caught.
+
+    ``votes_by_round`` is players down the rows and rounds across the columns,
+    holding the votes polled in each. The count is revealed round by round, so
+    after round R everyone still has at most three votes per round left to come.
+    The winner is declared at the first R where the leader's total exceeds every
+    other player's best possible finish.
+
+    Returns ``None`` when the season ends without that ever being true -- which
+    is what a count that goes to the last round looks like.
+    """
+    if votes_by_round.empty:
+        return None
+    cumulative = votes_by_round.cumsum(axis=1)
+    rounds = list(votes_by_round.columns)
+
+    for position, round_label in enumerate(rounds):
+        standing = cumulative[round_label]
+        leader = standing.max()
+        left = len(rounds) - position - 1
+        if left == 0:
+            # The final round: the leader is declared if nobody is level.
+            return round_label if (standing == leader).sum() == 1 else None
+        # Everyone else can still add three votes per remaining round.
+        best_possible = standing + 3 * left
+        rivals = best_possible.drop(standing.idxmax())
+        if leader > rivals.max():
+            return round_label
+    return None
+
+
 def evaluate_season(predictions: pd.DataFrame, top_n: int = 10) -> Dict:
     """All of the above in one dictionary, ready to write to metrics.json."""
     metrics: Dict = {}
     metrics.update(match_metrics(predictions))
     metrics.update(season_metrics(predictions, top_n=top_n))
+    if "team" in predictions.columns:
+        metrics.update(team_leader_metrics(predictions))
     if "score" in predictions.columns:
         try:
             metrics.update(plackett_luce_log_likelihood(predictions))

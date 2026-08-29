@@ -172,6 +172,49 @@ def _read_rda(path: Path) -> pd.DataFrame:
     return result[next(iter(result))]
 
 
+def add_afl_round_labels(df: pd.DataFrame) -> pd.DataFrame:
+    """Add the round label the AFL itself uses, alongside the source numbering.
+
+    From 2024 the season opens with a short **Opening Round** of four or five
+    matches, and the AFL numbers the *following* week as round 1. AFL Tables
+    instead numbers Opening Round as its round 1, so every later round in its
+    data sits one ahead of the official number -- its round 12 is the AFL's
+    round 11.
+
+    That matters wherever a number is shown to someone: following the count on
+    the night, or lining a projection up against a betting market, an off-by-one
+    round is simply wrong. So ``round_number`` keeps the source's numbering for
+    ordering and joins, and ``afl_round`` carries the label to display.
+
+    Opening Round is detected from the draw rather than hard-coded to a season:
+    a first round with far fewer matches than the rest of the season is one.
+    """
+    out = df.copy()
+    out["afl_round"] = out["round"].astype(str)
+    out["afl_round_number"] = out["round_number"]
+    if "match_id" not in out.columns or out["round_number"].isna().all():
+        return out
+
+    home_and_away = out[~out["is_final"]]
+    for season, group in home_and_away.groupby("season", dropna=False):
+        per_round = group.groupby("round_number")["match_id"].nunique()
+        if per_round.empty or 1.0 not in per_round.index:
+            continue
+        # A normal round is most of the competition; Opening Round is a handful.
+        if per_round.loc[1.0] >= 0.7 * per_round.median():
+            continue
+        rows = (out["season"] == season) & (~out["is_final"])
+        opening = rows & (out["round_number"] == 1.0)
+        later = rows & (out["round_number"] > 1.0)
+        out.loc[opening, "afl_round"] = "Opening Round"
+        out.loc[opening, "afl_round_number"] = 0.0
+        out.loc[later, "afl_round_number"] = out.loc[later, "round_number"] - 1
+        out.loc[later, "afl_round"] = (
+            out.loc[later, "afl_round_number"].astype(int).astype(str)
+        )
+    return out
+
+
 def tidy(raw: pd.DataFrame) -> pd.DataFrame:
     """Convert a raw AFL Tables frame into this project's tidy schema.
 
@@ -230,6 +273,8 @@ def tidy(raw: pd.DataFrame) -> pd.DataFrame:
     df["opponent"] = np.where(is_home, df["away_team"], df["home_team"])
     df["margin"] = df["team_score"] - df["opp_score"]
     df["win"] = np.sign(df["margin"]).clip(lower=0).astype(float)
+    # Needs match_id, so it runs after the key is built.
+    df = add_afl_round_labels(df)
     df.loc[df["margin"] == 0, "win"] = 0.5  # a draw is half a win
 
     if "substitute" in df.columns:

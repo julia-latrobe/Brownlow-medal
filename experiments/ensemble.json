@@ -1,0 +1,21 @@
+{
+  "name": "ensemble",
+  "model": "ensemble",
+  "alpha": 1.0,
+  "train_seasons": "2015-2024",
+  "test_seasons": "2025",
+  "predict_seasons": "2026",
+  "n_simulations": 10000,
+  "seed": 0,
+  "ineligible": [],
+  "annotations": {},
+  "compare_baseline": true,
+  "cross_validate": true,
+  "cv_min_train_seasons": 7,
+  "features": {
+    "include_position": true,
+    "include_interactions": true,
+    "include_match_best": true
+  },
+  "notes": "The rank model and a gradient-boosted ranker, pooled. The linear model gives calibrated probabilities but can only add features up; the booster finds combinations and thresholds by itself but has no probabilities of its own. They disagree enough (correlation about 0.96) that pooling them helps, where pooling variants of one model did not. Needs the optional boost extra: pip install 'brownlow[boost]'."
+}

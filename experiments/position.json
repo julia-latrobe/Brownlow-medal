@@ -1,0 +1,23 @@
+{
+  "name": "position",
+  "model": "plackett_luce",
+  "alpha": 1.0,
+  "train_seasons": "2015-2024",
+  "test_seasons": "2025",
+  "predict_seasons": "2026",
+  "n_simulations": 10000,
+  "seed": 0,
+  "ineligible": [],
+  "annotations": {},
+  "compare_baseline": true,
+  "cross_validate": true,
+  "cv_min_train_seasons": 7,
+  "features": {
+    "include_position": true,
+    "include_history": true,
+    "include_form": true,
+    "include_interactions": true,
+    "include_match_best": true
+  },
+  "notes": "Adds where each player plays, derived from their statistical profile. Midfielders are 29% of the players and take 66% of the votes; defenders are 36% and take 9%. Position dummies and position-by-statistic products let the model say that twenty-five disposals is a remarkable game from a defender and an ordinary one from a midfielder. Best of any scenario at naming a club's leading vote-getter."
+}

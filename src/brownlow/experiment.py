@@ -48,14 +48,24 @@ from brownlow.features import FeatureConfig
 from brownlow.model import PlackettLuceModel, WeightedLogisticModel
 from brownlow.simulate import simulate_season
 
+
+def _ensemble(*args, **kwargs):
+    """Imported lazily: the ensemble needs an optional dependency."""
+    from brownlow.ensemble import EnsembleModel
+
+    return EnsembleModel(*args, **kwargs)
+
+
 MODELS = {
     "plackett_luce": PlackettLuceModel,
     "logistic": WeightedLogisticModel,
+    "ensemble": _ensemble,
 }
 
 _FRIENDLY_NAMES = {
     "plackett_luce": "Rank model (Plackett-Luce)",
     "logistic": "Weighted logistic",
+    "ensemble": "Ensemble (rank + boosted)",
 }
 
 
@@ -265,7 +275,7 @@ def write_outputs(
         columns = [
             c
             for c in (
-                "season", "round", "match_id", "date", "local_start_time",
+                "season", "round", "afl_round", "match_id", "date", "local_start_time",
                 "venue", "player", "team", "opponent", "is_home", "votes",
                 "predicted_votes", "expected_votes", "p_3_votes", "p_2_votes",
                 "p_1_vote", "p_any_votes", "score",

@@ -92,6 +92,43 @@ def segment_softmax(values: np.ndarray, index: MatchIndex, mask: np.ndarray | No
     return probabilities, peak + np.log(np.maximum(totals, _EPS))
 
 
+def plackett_luce_marginals(scores: np.ndarray, index: MatchIndex):
+    """Each player's exact probability of taking 3, 2 and 1 votes.
+
+    Given a score per player, the umpires' sequential choice gives closed forms:
+
+    * ``P(3)`` is simply the softmax over the match.
+    * ``P(2)`` sums over who might have taken the 3 first.
+    * ``P(1)`` sums over every ordered pair who might have gone before.
+
+    Each column sums to one across a match, so expected votes sum to exactly six
+    -- no simulation needed. Any model that produces a score per player can use
+    this, which is how the ensemble reuses it.
+    """
+    probabilities, _ = segment_softmax(np.asarray(scores, dtype=float), index)
+    p3 = probabilities
+    p2 = np.zeros_like(p3)
+    p1 = np.zeros_like(p3)
+
+    for start, size in zip(index.starts, index.sizes):
+        block = slice(start, start + size)
+        p = probabilities[block]
+        rest = np.maximum(1.0 - p, _EPS)
+
+        # Second pick: someone else wins the first draw, then this player wins
+        # the second from what is left.
+        ratio = p / rest
+        p2[block] = p * (ratio.sum() - ratio)
+
+        # Third pick: sum over every ordered pair of earlier winners.
+        pair_remaining = np.maximum(1.0 - p[:, None] - p[None, :], _EPS)
+        g = (p[:, None] * p[None, :]) / (rest[:, None] * pair_remaining)
+        np.fill_diagonal(g, 0.0)
+        p1[block] = p * (g.sum() - g.sum(axis=1) - g.sum(axis=0))
+
+    return p3, p2, p1
+
+
 def allocate_votes(scores: np.ndarray, index: MatchIndex) -> np.ndarray:
     """Hand out 3, 2, 1 and 0 to the players in each match, by rank.
 
@@ -393,27 +430,7 @@ class PlackettLuceModel(BaseVoteModel):
         prepared, X = self._prepare(df, fit=False)
         scores = self.scaler_.transform(X) @ self.coefficients_
         index = MatchIndex(prepared["match_id"].to_numpy())
-        probabilities, _ = segment_softmax(scores, index)
-
-        p3 = probabilities
-        p2 = np.zeros_like(p3)
-        p1 = np.zeros_like(p3)
-
-        for start, size in zip(index.starts, index.sizes):
-            block = slice(start, start + size)
-            p = probabilities[block]
-            rest = np.maximum(1.0 - p, _EPS)
-
-            # Second pick: someone else wins the first draw, then this player
-            # wins the second from what is left.
-            ratio = p / rest
-            p2[block] = p * (ratio.sum() - ratio)
-
-            # Third pick: sum over every ordered pair of earlier winners.
-            pair_remaining = np.maximum(1.0 - p[:, None] - p[None, :], _EPS)
-            g = (p[:, None] * p[None, :]) / (rest[:, None] * pair_remaining)
-            np.fill_diagonal(g, 0.0)
-            p1[block] = p * (g.sum() - g.sum(axis=1) - g.sum(axis=0))
+        p3, p2, p1 = plackett_luce_marginals(scores, index)
 
         out = prepared.copy()
         out["score"] = scores
