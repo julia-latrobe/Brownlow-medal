@@ -65,14 +65,15 @@ class TestCollectGames:
         """Per-match rows are the bulk of the page, so they stay as arrays."""
         payload = collect_run(run_dir)
         first = next(g for g in payload["games"] if g)
-        assert len(first[0]) == 8  # round, opponent, home, expected, p3, p2, p1, actual
+        # round, opponent, home, expected, p3, p2, p1, actual, allocated
+        assert len(first[0]) == 9
 
     def test_expected_votes_match_the_leaderboard_total(self, run_dir):
         """A player's match rows must add up to their season projection."""
         payload = collect_run(run_dir, detail_players=None)
         for player, games in zip(payload["players"], payload["games"]):
             total = sum(g[3] or 0 for g in games)
-            assert total == pytest.approx(player["predicted_votes"], abs=0.01)
+            assert total == pytest.approx(player["expected_votes"], abs=0.01)
 
     def test_opponents_are_indexed_not_repeated(self, run_dir):
         payload = collect_run(run_dir)
@@ -90,7 +91,8 @@ class TestCollectGames:
             "team": ["Geelong", "Carlton", "Geelong", "Carlton"],
             "opponent": ["Carlton", "Geelong", "Sydney", "Hawthorn"],
             "is_home": [1, 0, 1, 0],
-            "predicted_votes": [2.0, 1.0, 2.5, 0.5],
+            "predicted_votes": [3.0, 2.0, 3.0, 1.0],
+            "expected_votes": [2.0, 1.0, 2.5, 0.5],
             "p_3_votes": [0.5, 0.2, 0.6, 0.1],
             "p_2_votes": [0.3, 0.2, 0.2, 0.1],
             "p_1_vote": [0.1, 0.2, 0.1, 0.1],

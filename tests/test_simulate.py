@@ -24,7 +24,7 @@ class TestSimulateSeason:
     def test_simulated_votes_match_the_expected_votes(self, simulated):
         """Monte Carlo means should land on the closed-form expectation."""
         predictions, summary = simulated
-        expected = predictions.groupby("player")["predicted_votes"].sum()
+        expected = predictions.groupby("player")["expected_votes"].sum()
         merged = summary.set_index("player")["mean_votes"]
         common = expected.index.intersection(merged.index)
         np.testing.assert_allclose(
@@ -53,7 +53,7 @@ class TestSimulateSeason:
         model = PlackettLuceModel().fit(small_season)
         predictions = model.predict(small_season)
         favourite = (
-            predictions.groupby("player")["predicted_votes"].sum().idxmax()
+            predictions.groupby("player")["expected_votes"].sum().idxmax()
         )
         summary = simulate_season(predictions, n_simulations=1000,
                                   ineligible=[favourite], seed=1)
@@ -90,6 +90,6 @@ class TestSimulateSeason:
         assert set(rows["team"]) == set(teams)
 
         # Their combined total should still equal what the model expects of them.
-        expected = renamed[renamed["player"] == "Shared Name"]["predicted_votes"].sum()
+        expected = renamed[renamed["player"] == "Shared Name"]["expected_votes"].sum()
         assert rows["mean_votes"].sum() == pytest.approx(expected, abs=0.6)
         assert summary["win_probability"].sum() == pytest.approx(1.0)

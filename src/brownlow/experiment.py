@@ -229,7 +229,11 @@ def run_experiment(
                 else simulated.drop(columns=["rank", "team"], errors="ignore"),
                 on=join_keys,
                 how="left",
-            ).sort_values("predicted_votes", ascending=False)
+            ).sort_values(
+                [c for c in ("expected_votes", "predicted_votes")
+                 if c in leaderboard.columns],
+                ascending=False,
+            )
             leaderboard["rank"] = np.arange(1, len(leaderboard) + 1)
             results["simulation"] = simulated
         results["leaderboard"] = leaderboard.reset_index(drop=True)
@@ -263,7 +267,7 @@ def write_outputs(
             for c in (
                 "season", "round", "match_id", "date", "local_start_time",
                 "venue", "player", "team", "opponent", "is_home", "votes",
-                "predicted_votes", "p_3_votes", "p_2_votes",
+                "predicted_votes", "expected_votes", "p_3_votes", "p_2_votes",
                 "p_1_vote", "p_any_votes", "score",
             )
             if c in frame.columns

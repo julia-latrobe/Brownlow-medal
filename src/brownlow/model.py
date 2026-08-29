@@ -92,6 +92,29 @@ def segment_softmax(values: np.ndarray, index: MatchIndex, mask: np.ndarray | No
     return probabilities, peak + np.log(np.maximum(totals, _EPS))
 
 
+def allocate_votes(scores: np.ndarray, index: MatchIndex) -> np.ndarray:
+    """Hand out 3, 2, 1 and 0 to the players in each match, by rank.
+
+    This is the model's actual call: the best-rated player in the game gets the
+    3, the next the 2, the next the 1, everyone else nothing -- exactly the shape
+    of a real umpire's card.
+
+    It is not the same thing as expected votes, and the two answer different
+    questions. Expected votes (``3*P(3) + 2*P(2) + P(1)``) is the better estimate
+    of a season total, because it keeps the near-misses: a player who is second
+    favourite in fifteen games is worth a lot of votes even if he never quite
+    tops one. This allocation throws that away, and in exchange tells you who the
+    model would actually name.
+    """
+    allocated = np.zeros(len(scores), dtype=float)
+    for start, size in zip(index.starts, index.sizes):
+        block = scores[start:start + size]
+        top = np.argsort(-block)[:3]
+        for rank, position in enumerate(top):
+            allocated[start + position] = 3.0 - rank
+    return allocated
+
+
 class _StandardScaler:
     """Centre and scale features so the L2 penalty treats them comparably."""
 
@@ -162,13 +185,35 @@ class BaseVoteModel:
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         """Return per-player predicted votes for every match in ``df``.
 
-        Adds ``predicted_votes`` (the expected number of votes, a real number
-        between 0 and 3) and the probabilities of taking each vote count.
+        Adds two columns, which answer different questions:
+
+        ``predicted_votes``
+            The model's actual call: 3, 2, 1 or 0, awarded by rank within the
+            match, the way an umpire fills in a card.
+        ``expected_votes``
+            A real number between 0 and 3, being ``3*P(3) + 2*P(2) + P(1)``.
+            The better estimate of a season total, because it keeps the
+            near-misses that the hard allocation discards.
+
+        Plus the probability of taking each vote count.
         """
         raise NotImplementedError
 
     def season_totals(self, predictions: pd.DataFrame, by: str = "player") -> pd.DataFrame:
-        """Add up predicted votes across a season into a leaderboard.
+        """Add up votes across a season into a leaderboard.
+
+        Carries both totals. ``predicted_votes`` sums the 3-2-1 allocations, so
+        it is a whole number and reads like a real count. ``expected_votes`` sums
+        the expectations, so it is smoother and usually the better estimate --
+        it credits the games a player nearly won votes in.
+
+        Rows are ordered by expected votes, with the tally breaking ties. That
+        ordering is the one the charts and the season simulation agree with --
+        the simulated spread around a player is a spread around their
+        *expectation*, so ranking by the hard allocation instead would put bars
+        out of step with their own uncertainty bands. It is also the better
+        estimate: against the real 2025 count it was about a vote closer per
+        player across the top 20.
 
         Grouping keeps the season and the player's team alongside the name, so a
         multi-season frame produces one row per player per season rather than
@@ -179,13 +224,18 @@ class BaseVoteModel:
             keys.insert(0, "season")
         if by == "player" and "team" in predictions.columns:
             keys.append("team")
-        grouped = predictions.groupby(keys, dropna=False).agg(
-            predicted_votes=("predicted_votes", "sum"),
-            games=("match_id", "count"),
-        )
+
+        aggregations = {"games": ("match_id", "count")}
+        for column in ("predicted_votes", "expected_votes"):
+            if column in predictions.columns:
+                aggregations[column] = (column, "sum")
+        grouped = predictions.groupby(keys, dropna=False).agg(**aggregations)
+
         if "votes" in predictions.columns and predictions["votes"].notna().any():
             grouped["actual_votes"] = predictions.groupby(keys, dropna=False)["votes"].sum()
-        out = grouped.reset_index().sort_values("predicted_votes", ascending=False)
+
+        sort_by = [c for c in ("expected_votes", "predicted_votes") if c in grouped.columns]
+        out = grouped.reset_index().sort_values(sort_by, ascending=False)
         out.insert(0, "rank", np.arange(1, len(out) + 1))
         return out.reset_index(drop=True)
 
@@ -351,7 +401,9 @@ class PlackettLuceModel(BaseVoteModel):
         out["p_2_votes"] = p2
         out["p_1_vote"] = p1
         out["p_any_votes"] = p3 + p2 + p1
-        out["predicted_votes"] = 3.0 * p3 + 2.0 * p2 + 1.0 * p1
+        # Two different answers, both worth having. See allocate_votes.
+        out["expected_votes"] = 3.0 * p3 + 2.0 * p2 + 1.0 * p1
+        out["predicted_votes"] = allocate_votes(scores, index)
         return out
 
 
@@ -430,17 +482,15 @@ class WeightedLogisticModel(BaseVoteModel):
         scores = self.intercept_ + self.scaler_.transform(X) @ self.coefficients_
         index = MatchIndex(prepared["match_id"].to_numpy())
 
-        # Hard 3-2-1 assignment to the top three scores in each match.
-        assigned = np.zeros(len(scores))
-        for start, size in zip(index.starts, index.sizes):
-            block = slice(start, start + size)
-            order = np.argsort(-scores[block])[:3]
-            for rank, position in enumerate(order):
-                assigned[start + position] = 3.0 - rank
-
         out = prepared.copy()
         out["score"] = scores
-        out["predicted_votes"] = assigned
+        out["predicted_votes"] = allocate_votes(scores, index)
+        # This model scores players against the league rather than against the
+        # others in their match, so it has no per-match vote probabilities to
+        # take an expectation over. Its expected votes are therefore just its
+        # allocation -- reported for a consistent interface, not because the
+        # model has anything smoother to say.
+        out["expected_votes"] = out["predicted_votes"]
         out["p_any_votes"] = 1.0 / (1.0 + np.exp(-scores))
         return out
 

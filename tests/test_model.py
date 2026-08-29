@@ -64,8 +64,46 @@ class TestPlackettLuceModel:
         """Reality awards exactly 6 votes a match, and so must the model."""
         model = PlackettLuceModel().fit(synthetic_seasons)
         predictions = model.predict(synthetic_seasons)
-        totals = predictions.groupby("match_id")["predicted_votes"].sum()
+        totals = predictions.groupby("match_id")["expected_votes"].sum()
         np.testing.assert_allclose(totals.to_numpy(), 6.0, atol=1e-6)
+
+    def test_allocation_is_only_ever_3_2_1_or_0(self, synthetic_seasons):
+        """The model's call for a game looks like an umpire's card."""
+        model = PlackettLuceModel().fit(synthetic_seasons)
+        predictions = model.predict(synthetic_seasons)
+        assert set(predictions["predicted_votes"].unique()) <= {0.0, 1.0, 2.0, 3.0}
+
+    def test_every_match_allocates_exactly_one_of_each(self, synthetic_seasons):
+        model = PlackettLuceModel().fit(synthetic_seasons)
+        predictions = model.predict(synthetic_seasons)
+        for _, group in predictions.groupby("match_id"):
+            awarded = sorted(group["predicted_votes"][group["predicted_votes"] > 0],
+                             reverse=True)
+            assert awarded == [3.0, 2.0, 1.0]
+
+    def test_allocated_votes_also_total_six_per_match(self, synthetic_seasons):
+        model = PlackettLuceModel().fit(synthetic_seasons)
+        totals = model.predict(synthetic_seasons).groupby("match_id")[
+            "predicted_votes"].sum()
+        assert (totals == 6.0).all()
+
+    def test_the_3_goes_to_the_highest_rated_player(self, synthetic_seasons):
+        """The allocation must follow the model's own ordering."""
+        model = PlackettLuceModel().fit(synthetic_seasons)
+        predictions = model.predict(synthetic_seasons)
+        for _, group in predictions.groupby("match_id"):
+            ordered = group.sort_values("expected_votes", ascending=False)
+            assert ordered["predicted_votes"].tolist()[:3] == [3.0, 2.0, 1.0]
+
+    def test_allocation_and_expectation_are_different_answers(self, synthetic_seasons):
+        """If they were the same column there would be no point having both."""
+        model = PlackettLuceModel().fit(synthetic_seasons)
+        predictions = model.predict(synthetic_seasons)
+        assert not np.allclose(predictions["predicted_votes"],
+                               predictions["expected_votes"])
+        # The expectation spreads across the whole field; the allocation does not.
+        assert (predictions["expected_votes"] > 0).sum() > (
+            predictions["predicted_votes"] > 0).sum()
 
     def test_vote_probabilities_are_valid(self, synthetic_seasons):
         model = PlackettLuceModel().fit(synthetic_seasons)
@@ -113,7 +151,7 @@ class TestPlackettLuceModel:
         test = synthetic_seasons[synthetic_seasons["season"] == 2022]
         model = PlackettLuceModel().fit(train)
         predictions = model.predict(test)
-        top = predictions.sort_values(["match_id", "predicted_votes"], ascending=[True, False])
+        top = predictions.sort_values(["match_id", "expected_votes"], ascending=[True, False])
         hits = top.groupby("match_id").head(1)["votes"].eq(3).mean()
         assert hits > 0.2  # random guessing among ~44 players is about 0.02
 
@@ -135,11 +173,11 @@ class TestPlackettLuceModel:
 
     def test_save_and_load_round_trip(self, small_season, tmp_path):
         model = PlackettLuceModel().fit(small_season)
-        before = model.predict(small_season)["predicted_votes"].to_numpy()
+        before = model.predict(small_season)["expected_votes"].to_numpy()
 
         path = model.save(tmp_path / "model.json")
         reloaded = PlackettLuceModel.load(path)
-        after = reloaded.predict(small_season)["predicted_votes"].to_numpy()
+        after = reloaded.predict(small_season)["expected_votes"].to_numpy()
 
         np.testing.assert_allclose(before, after)
 

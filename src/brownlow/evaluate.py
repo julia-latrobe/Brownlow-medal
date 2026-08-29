@@ -31,7 +31,22 @@ def _top_k_by_match(df: pd.DataFrame, column: str, k: int = 3) -> pd.DataFrame:
     return order.groupby("match_id").head(k)
 
 
-def match_metrics(predictions: pd.DataFrame, score_column: str = "predicted_votes") -> Dict:
+def _ranking_column(predictions: pd.DataFrame, preferred: Optional[str] = None) -> str:
+    """Which column orders the players within a match.
+
+    Never the 3-2-1 allocation: everyone outside the top three shares a zero, so
+    ranking on it would be settled by row order rather than by the model. The
+    continuous score is the model's real opinion, so use that where it exists.
+    """
+    if preferred is not None:
+        return preferred
+    for column in ("score", "expected_votes", "predicted_votes"):
+        if column in predictions.columns:
+            return column
+    raise ValueError("No column to rank players by.")
+
+
+def match_metrics(predictions: pd.DataFrame, score_column: Optional[str] = None) -> Dict:
     """How well did we pick the vote-getters, match by match?
 
     ``top1_accuracy``
@@ -43,10 +58,16 @@ def match_metrics(predictions: pd.DataFrame, score_column: str = "predicted_vote
     ``exact_order_accuracy``
         Share of matches where we got all three players *and* their order right.
         This is deliberately brutal -- even excellent models sit low here.
+    ``mean_absolute_error``
+        On expected votes, which is the estimate; the hard allocation is scored
+        by the ranking metrics above.
     """
     known = predictions[predictions["votes"].notna()].copy()
     if known.empty:
         raise ValueError("No matches with known votes to score against.")
+
+    score_column = _ranking_column(known, score_column)
+    error_column = "expected_votes" if "expected_votes" in known.columns else score_column
 
     known["predicted_rank"] = (
         known.groupby("match_id")[score_column].rank(ascending=False, method="first")
@@ -69,7 +90,7 @@ def match_metrics(predictions: pd.DataFrame, score_column: str = "predicted_vote
         "top1_accuracy": float(len(top1) / n_matches),
         "top3_recall": float(len(top3) / (3 * n_matches)),
         "exact_order_accuracy": float(exact_hits.mean()),
-        "mean_absolute_error": float((known[score_column] - known["votes"]).abs().mean()),
+        "mean_absolute_error": float((known[error_column] - known["votes"]).abs().mean()),
     }
 
 
@@ -109,14 +130,21 @@ def plackett_luce_log_likelihood(predictions: pd.DataFrame) -> Dict:
 
 
 def season_metrics(predictions: pd.DataFrame, top_n: int = 10) -> Dict:
-    """Did we get the *count* right -- the leaderboard, not the single match?"""
+    """Did we get the *count* right -- the leaderboard, not the single match?
+
+    Scored on expected votes rather than the 3-2-1 allocation. Expected votes
+    keep the near-misses, so they order a season far better: a player who is
+    runner-up in fifteen games has earned a high projection, while the
+    allocation would give him nothing at all.
+    """
     known = predictions[predictions["votes"].notna()]
     if known.empty:
         raise ValueError("No matches with known votes to score against.")
 
+    column = "expected_votes" if "expected_votes" in known.columns else "predicted_votes"
     totals = (
         known.groupby("player")
-        .agg(predicted=("predicted_votes", "sum"), actual=("votes", "sum"))
+        .agg(predicted=(column, "sum"), actual=("votes", "sum"))
         .reset_index()
     )
     predicted_order = totals.sort_values("predicted", ascending=False)

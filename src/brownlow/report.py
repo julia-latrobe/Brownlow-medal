@@ -71,7 +71,7 @@ def collect_run(run_dir: Path, detail_players: Optional[int] = DEFAULT_DETAIL_PL
 
     columns = [
         c for c in (
-            "player", "team", "predicted_votes", "games", "actual_votes",
+            "player", "team", "predicted_votes", "expected_votes", "games", "actual_votes",
             "win_probability", "top5_probability", "mean_votes",
             "p10_votes", "p90_votes",
         ) if c in board.columns
@@ -145,8 +145,8 @@ def _collect_games(predictions_file: Path, board: pd.DataFrame, limit: Optional[
 
     Returns a list parallel to ``board``'s rows, each holding that player's
     matches as ``[round, opponent index, is home, expected votes, p3, p2, p1,
-    actual votes]``. Players are identified by name *and* club, because two
-    players can share a name.
+    actual votes, allocated votes]``. Players are identified by name *and* club,
+    because two players can share a name.
 
     ``limit`` keeps per-match detail for only the leading players. These rows are
     most of the page's weight -- a season is roughly 9,500 of them per run -- and
@@ -188,11 +188,12 @@ def _collect_games(predictions_file: Path, board: pd.DataFrame, limit: Optional[
                 _round_number(record.get("round")),
                 opponent_index.get(str(record.get("opponent")), -1),
                 1 if record.get("is_home") else 0,
-                cell(record, "predicted_votes", 4),
+                cell(record, "expected_votes", 4),
                 cell(record, "p_3_votes", 4),
                 cell(record, "p_2_votes", 4),
                 cell(record, "p_1_vote", 4),
                 cell(record, "votes", 0),
+                cell(record, "predicted_votes", 0),
             ])
         grouped[key] = rows
 
@@ -217,6 +218,7 @@ def _collect_rounds(predictions_file: Path, top_n: int = 5):
     needed = {"round", "match_id", "player", "predicted_votes"}
     if not needed <= set(frame.columns):
         return []
+    rank_column = "expected_votes" if "expected_votes" in frame.columns else "predicted_votes"
 
     if "date" in frame.columns:
         frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
@@ -241,7 +243,10 @@ def _collect_rounds(predictions_file: Path, top_n: int = 5):
             else:
                 home_name, _, away_name = str(match_id).partition("-v-")
                 home_name = home_name.split("-", 2)[-1]
-            ranked = match_rows.sort_values("predicted_votes", ascending=False).head(top_n)
+            # Rank on the continuous expectation. The 3-2-1 allocation ties
+            # everyone outside the top three on zero, so the runners-up would
+            # come back in arbitrary order.
+            ranked = match_rows.sort_values(rank_column, ascending=False).head(top_n)
 
             date_value = first.get("date")
             start = first.get("local_start_time")
@@ -256,7 +261,9 @@ def _collect_rounds(predictions_file: Path, top_n: int = 5):
                     {
                         "player": str(row["player"]),
                         "team": str(row.get("team", "")),
-                        "expected": round(float(row["predicted_votes"]), 3),
+                        "expected": round(float(row.get("expected_votes",
+                                                        row["predicted_votes"])), 3),
+                        "allocated": int(row.get("predicted_votes", 0) or 0),
                         "p3": round(float(row.get("p_3_votes", 0) or 0), 4),
                         "actual": (
                             None if pd.isna(row.get("votes")) else int(row.get("votes"))
@@ -694,7 +701,7 @@ function render() {
   const run = currentRun();
   const team = $('team-select').value;
   const players = team ? run.players.filter(p => p.team === team) : run.players;
-  const ranked = [...players].sort((a, b) => b.predicted_votes - a.predicted_votes);
+  const ranked = [...players].sort((a, b) => b.expected_votes - a.expected_votes);
   const hasWin = run.players.some(p => p.win_probability !== undefined && p.win_probability !== null);
 
   const seasons = run.train_seasons || [];
@@ -721,7 +728,7 @@ function render() {
       tiles += tile('Win probability', (leader.win_probability * 100).toFixed(0) + '%',
                     `from ${(run.simulations || 0).toLocaleString()} simulated seasons`);
     }
-    tiles += tile('Projected votes', fmt(leader.predicted_votes),
+    tiles += tile('Projected votes', fmt(leader.expected_votes),
                   'expected total across the season');
   }
   if (run.holdout && run.holdout.top3_recall !== undefined) {
@@ -735,10 +742,10 @@ function render() {
     ? `${team}: projected votes, ${run.season_label}`
     : `Projected leaderboard, ${run.season_label}`;
   $('leaderboard').innerHTML = hbar(ranked.slice(0, 20).map(p => ({
-    label: p.player, sub: team ? null : p.team, value: p.predicted_votes,
+    label: p.player, sub: team ? null : p.team, value: p.expected_votes,
     href: playerHref(p),
     low: p.p10_votes, high: p.p90_votes,
-    tip: `${p.player} (${p.team || '--'}): ${fmt(p.predicted_votes)} expected votes` +
+    tip: `${p.player} (${p.team || '--'}): ${fmt(p.expected_votes)} expected votes` +
          (p.p10_votes !== null && p.p10_votes !== undefined
             ? ` · likely ${fmt(p.p10_votes, 0)}–${fmt(p.p90_votes, 0)}` : '') +
          (p.win_probability ? ` · ${(p.win_probability * 100).toFixed(1)}% to win` : '')
@@ -768,7 +775,7 @@ function render() {
   const totals = {};
   run.players.forEach(p => {
     if (!p.team) return;
-    totals[p.team] = (totals[p.team] || 0) + p.predicted_votes;
+    totals[p.team] = (totals[p.team] || 0) + p.expected_votes;
   });
   const teamRows = Object.entries(totals).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({
     label: name, value,
@@ -818,12 +825,12 @@ function teamTable(run, totals) {
   run.players.forEach(p => { if (p.team) counts[p.team] = (counts[p.team] || 0) + 1; });
   const rows = Object.entries(totals).sort((a, b) => b[1] - a[1]).map(([team, value], i) => {
     const best = run.players.filter(p => p.team === team)
-      .sort((a, b) => b.predicted_votes - a.predicted_votes)[0];
+      .sort((a, b) => b.expected_votes - a.expected_votes)[0];
     return `<tr><td class="num">${i + 1}</td><td>${teamLink(team)}</td>
       <td class="num">${fmt(value)}</td>
       ${hasActual ? `<td class="num">${fmt(actual[team] || 0)}</td>` : ''}
       <td>${best ? playerLink(run, best) : '--'}</td>
-      <td class="num">${fmt(best ? best.predicted_votes : 0)}</td>
+      <td class="num">${fmt(best ? best.expected_votes : 0)}</td>
       <td class="num">${counts[team] || 0}</td></tr>`;
   }).join('');
   return `<div class="table-wrap"><table><thead><tr><th>#</th><th>Team</th>
@@ -838,7 +845,9 @@ function playerTable(run, ranked, hasWin) {
   // round-by-round page behind their name.
   const rows = ranked.slice(0, run.detail_players || 50).map((p, i) => `<tr>
     <td class="num">${i + 1}</td><td>${playerLink(run, p)}</td><td>${esc(p.team || '--')}</td>
-    <td class="num">${fmt(p.predicted_votes)}</td>
+    <td class="num"><strong>${p.predicted_votes === null || p.predicted_votes === undefined
+        ? '--' : fmt(p.predicted_votes, 0)}</strong></td>
+    <td class="num">${fmt(p.expected_votes)}</td>
     <td class="num">${p.games === undefined || p.games === null ? '--' : p.games}</td>
     ${hasWin ? `<td class="num">${p.win_probability === null || p.win_probability === undefined
         ? '--' : (p.win_probability * 100).toFixed(1) + '%'}</td>` : ''}
@@ -846,7 +855,10 @@ function playerTable(run, ranked, hasWin) {
     ${hasActual ? `<td class="num">${fmt(p.actual_votes, 0)}</td>` : ''}
   </tr>`).join('');
   return `<div class="table-wrap"><table><thead><tr>
-    <th>#</th><th>Player</th><th>Team</th><th>Projected votes</th><th>Games</th>
+    <th>#</th><th>Player</th><th>Team</th>
+    <th title="Sum of the 3-2-1 the model awards, game by game">Predicted</th>
+    <th title="Sum of 3&times;P(3) + 2&times;P(2) + P(1)">Expected</th>
+    <th>Games</th>
     ${hasWin ? '<th>Win prob.</th><th>Likely range</th>' : ''}
     ${hasActual ? '<th>Actual</th>' : ''}
     </tr></thead><tbody>${rows}</tbody></table></div>`;
@@ -924,13 +936,19 @@ function renderPlayer(key) {
   const p = run.players[position];
   const games = (run.games || [])[position] || [];
   const showActual = games.some(g => g[7] !== null && g[7] !== undefined);
-  const ranked = [...run.players].sort((a, b) => b.predicted_votes - a.predicted_votes);
+  const ranked = [...run.players].sort((a, b) => b.expected_votes - a.expected_votes);
   const rank = ranked.findIndex(x => playerKey(x) === key) + 1;
   const best = games.length
     ? games.reduce((a, b) => ((b[3] || 0) > (a[3] || 0) ? b : a)) : null;
   const opponents = run.opponents || [];
 
-  let tiles = tile('Projected votes', fmt(p.predicted_votes), `${p.games || games.length} games`);
+  const allocated = games.reduce((total, g) => total + (g[8] || 0), 0);
+  let tiles = tile('Expected votes', fmt(p.expected_votes),
+                   `${p.games || games.length} games`);
+  if (p.predicted_votes !== null && p.predicted_votes !== undefined) {
+    tiles += tile('Predicted votes', fmt(p.predicted_votes, 0),
+                  'games where the model names them');
+  }
   if (p.win_probability !== null && p.win_probability !== undefined) {
     tiles += tile('Chance of winning', (p.win_probability * 100).toFixed(1) + '%',
                   'across simulated seasons');
@@ -956,6 +974,7 @@ function renderPlayer(key) {
     <td class="num">${((g[4] || 0) * 100).toFixed(1)}%</td>
     <td class="num">${((g[5] || 0) * 100).toFixed(1)}%</td>
     <td class="num">${((g[6] || 0) * 100).toFixed(1)}%</td>
+    <td class="num"><strong>${g[8] === null || g[8] === undefined ? '--' : g[8]}</strong></td>
     <td class="num">${fmt(g[3], 2)}</td>
     ${showActual ? `<td class="num">${g[7] === null || g[7] === undefined ? '--' : g[7]}</td>` : ''}
   </tr>`).join('');
@@ -975,11 +994,15 @@ function renderPlayer(key) {
        Three is the most any single game can award.</p>
     <div class="panel">${roundBars(games, opponents, showActual)}</div>
     <h2>Every match</h2>
-    <p class="note">The chance of taking 3, 2 and 1 votes in each game, and the
-       expected votes those add up to.</p>
+    <p class="note"><strong>Predicted</strong> is the model's call for that game
+       &mdash; 3, 2, 1 or 0, given to the three players it rates highest.
+       <strong>Expected</strong> is ${'3'} &times; P(3) + 2 &times; P(2) + P(1), which
+       is not a whole number but is the better estimate of a season total,
+       because it keeps the games a player nearly polled in. Both add to exactly
+       6 across every match.</p>
     <div class="table-wrap"><table><thead><tr>
       <th>Round</th><th>Opponent</th><th>H/A</th>
-      <th>P(3)</th><th>P(2)</th><th>P(1)</th><th>Expected</th>
+      <th>P(3)</th><th>P(2)</th><th>P(1)</th><th>Predicted</th><th>Expected</th>
       ${showActual ? '<th>Actual</th>' : ''}
     </tr></thead><tbody>${rows}</tbody></table></div>` : `
     <p class="note">Match-by-match detail is kept for the top
@@ -1019,6 +1042,7 @@ function renderRound(roundLabel) {
         <td>${predicted}</td>
         <td>${name}</td>
         <td>${teamLink(entry.team)}</td>
+        <td class="num"><strong>${entry.allocated || 0}</strong></td>
         <td class="num">${fmt(entry.expected, 2)}</td>
         <td class="num">${(entry.p3 * 100).toFixed(1)}%</td>
         ${entry.actual === null || entry.actual === undefined
@@ -1031,7 +1055,8 @@ function renderRound(roundLabel) {
       <p class="note">${esc(when)}${match.venue ? ' · ' + esc(match.venue) : ''}</p>
       <div class="table-wrap"><table><thead><tr>
         <th>Projected</th><th>Player</th><th>Team</th>
-        <th>Expected votes</th><th>Chance of the 3</th>${hasActual ? '<th>Actual</th>' : ''}
+        <th>Predicted</th><th>Expected</th><th>Chance of the 3</th>
+        ${hasActual ? '<th>Actual</th>' : ''}
       </tr></thead><tbody>${rows}</tbody></table></div>`;
   }).join('');
 
@@ -1053,7 +1078,7 @@ function renderTeam(teamName) {
   const squad = run.players
     .map((p, i) => ({ player: p, games: (run.games || [])[i] || [] }))
     .filter(entry => entry.player.team === teamName)
-    .sort((a, b) => b.player.predicted_votes - a.player.predicted_votes);
+    .sort((a, b) => b.player.expected_votes - a.player.expected_votes);
 
   if (!squad.length) {
     view.innerHTML = `<a class="back-link" href="#">&larr; Back to the season</a>
@@ -1063,7 +1088,7 @@ function renderTeam(teamName) {
 
   const totals = {};
   run.players.forEach(p => {
-    if (p.team) totals[p.team] = (totals[p.team] || 0) + p.predicted_votes;
+    if (p.team) totals[p.team] = (totals[p.team] || 0) + p.expected_votes;
   });
   const order = Object.entries(totals).sort((a, b) => b[1] - a[1]);
   const teamRank = order.findIndex(([name]) => name === teamName) + 1;
@@ -1071,7 +1096,7 @@ function renderTeam(teamName) {
 
   let tiles = tile('Projected votes', fmt(totals[teamName]), 'across the whole squad');
   tiles += tile('Competition rank', '#' + teamRank, `of ${order.length} clubs`);
-  tiles += tile('Leading player', squad[0].player.player, fmt(squad[0].player.predicted_votes) + ' votes');
+  tiles += tile('Leading player', squad[0].player.player, fmt(squad[0].player.expected_votes) + ' votes');
   tiles += tile('Players used', String(squad.length), 'polled at least a share');
 
   // The club's fixtures, taken from the round data so they stay in playing order.
@@ -1110,7 +1135,9 @@ function renderTeam(teamName) {
     return `<tr>
       <td class="num">${i + 1}</td>
       <td>${playerLink(run, p)}</td>
-      <td class="num">${fmt(p.predicted_votes)}</td>
+      <td class="num"><strong>${p.predicted_votes === null || p.predicted_votes === undefined
+          ? '--' : fmt(p.predicted_votes, 0)}</strong></td>
+      <td class="num">${fmt(p.expected_votes)}</td>
       <td class="num">${p.games === undefined || p.games === null ? '--' : p.games}</td>
       ${hasWin ? `<td class="num">${p.win_probability === null || p.win_probability === undefined
           ? '--' : (p.win_probability * 100).toFixed(1) + '%'}</td>` : ''}
@@ -1130,9 +1157,9 @@ function renderTeam(teamName) {
     <h2>Projected votes by player</h2>
     <p class="note">Every player at the club who is projected to poll, most votes first.</p>
     <div class="panel">${hbar(squad.slice(0, 20).map(e => ({
-      label: e.player.player, value: e.player.predicted_votes,
+      label: e.player.player, value: e.player.expected_votes,
       href: playerHref(e.player), low: e.player.p10_votes, high: e.player.p90_votes,
-      tip: `${e.player.player}: ${fmt(e.player.predicted_votes)} projected votes`
+      tip: `${e.player.player}: ${fmt(e.player.expected_votes)} projected votes`
     })), { labelWidth: 170 })}</div>
 
     <h2>Fixtures</h2>
@@ -1145,7 +1172,7 @@ function renderTeam(teamName) {
 
     <h2>Full squad</h2>
     <div class="table-wrap"><table><thead><tr>
-      <th>#</th><th>Player</th><th>Projected votes</th><th>Games</th>
+      <th>#</th><th>Player</th><th>Predicted</th><th>Expected</th><th>Games</th>
       ${hasWin ? '<th>Win prob.</th>' : ''}${hasActual ? '<th>Actual</th>' : ''}
     </tr></thead><tbody>${squadRows}</tbody></table></div>
     <p><a class="back-link" href="#">&larr; Back to the season</a></p>`;
