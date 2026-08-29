@@ -92,6 +92,13 @@ def make_synthetic_seasons(
                             "round": str(match_number % 23 + 1),
                             "round_number": float(match_number % 23 + 1),
                             "is_final": False,
+                            # A plausible fixture date and start time, so code
+                            # that orders matches as they were played has
+                            # something real to order by.
+                            "date": pd.Timestamp(f"{season}-03-01")
+                            + pd.Timedelta(days=7 * (match_number % 23) + match_number % 3),
+                            "local_start_time": [1340, 1620, 1930][match_number % 3],
+                            "venue": f"Ground {match_number % 9}",
                             "match_id": f"{season}-M{match_number:03d}-{home_team}-v-{away_team}",
                             "player": player,
                             "team": team,

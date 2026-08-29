@@ -1,0 +1,22 @@
+{
+  "name": "everything",
+  "model": "plackett_luce",
+  "alpha": 3.0,
+  "train_seasons": "2015-2024",
+  "test_seasons": "2025",
+  "predict_seasons": "2026",
+  "n_simulations": 10000,
+  "seed": 0,
+  "ineligible": [],
+  "annotations": {},
+  "compare_baseline": true,
+  "cross_validate": true,
+  "cv_min_train_seasons": 7,
+  "features": {
+    "include_history": true,
+    "include_form": true,
+    "include_interactions": true,
+    "include_match_best": true
+  },
+  "notes": "Everything at once - match statistics, past polling, recent form, interactions and match-best flags. Carries more regularisation (alpha 3) because it has far more features to overfit with. If this does not beat the simpler models, the extra signals are not paying for their complexity."
+}

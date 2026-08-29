@@ -52,6 +52,31 @@ DEFAULT_WIN_INTERACTIONS = (
     "fantasy_points",
 )
 
+#: Pairs multiplied together to give the model combinations it cannot otherwise
+#: express. The score is linear in its features, so "lots of the ball *and*
+#: kicked goals" is a different claim from "lots of the ball" plus "kicked
+#: goals", and only an explicit product can make it.
+DEFAULT_INTERACTION_PAIRS = (
+    ("disposals_z", "goals_z"),                 # did everything
+    ("contested_possessions_z", "goals_z"),     # won it and used it
+    ("clearances_z", "goals_z"),                # drove the game forward
+    ("disposals_z", "win"),                     # dominance that mattered
+    ("fantasy_points_z", "win"),
+    ("goals_z", "margin_scaled"),               # goals in a tight game
+    ("disposals_z", "margin_scaled"),
+    ("hit_outs", "clearances_z"),               # a ruckman's game
+    ("tackles_z", "contested_possessions_z"),   # two-way midfield work
+)
+
+#: Stats where topping the match is worth an explicit flag.
+DEFAULT_MATCH_BEST_STATS = (
+    "disposals",
+    "goals",
+    "contested_possessions",
+    "clearances",
+    "fantasy_points",
+)
+
 
 @dataclass
 class FeatureConfig:
@@ -86,6 +111,19 @@ class FeatureConfig:
     include_team_context: bool = True
     include_shares: bool = True
     include_ranks: bool = True
+    #: Products of pairs of features -- see :data:`DEFAULT_INTERACTION_PAIRS`.
+    include_interactions: bool = False
+    interaction_pairs: Sequence[Sequence[str]] = ()
+    #: Indicators for topping the match in a statistic. The model is linear in
+    #: its features, so "led the game for disposals" is something it cannot
+    #: express from the raw count alone.
+    include_match_best: bool = False
+    #: Prior-season and career Brownlow polling. Needs a season or two of
+    #: history loaded before the training window to be worth anything.
+    include_history: bool = False
+    #: A decaying average of recent performances, lagged by one match.
+    include_form: bool = False
+    form_halflife: float = 4.0
     extra: List[str] = field(default_factory=list)
 
 
@@ -113,7 +151,145 @@ def add_derived_stats(df: pd.DataFrame, config: FeatureConfig) -> pd.DataFrame:
     if {"disposals", "clangers"}.issubset(out.columns):
         out["clean_disposals"] = out["disposals"] - out["clangers"]
 
+    # A contested-work score, in the spirit of the scoring systems that weight
+    # hard-won possession above cheap possession. It is a proxy built from public
+    # statistics -- SuperCoach's actual formula is proprietary and not in this
+    # dataset, so this is not that number and should not be read as it.
+    contested_weights = {
+        "contested_possessions": 3.0,
+        "clearances": 4.0,
+        "contested_marks": 4.0,
+        "tackles": 3.0,
+        "goals": 6.0,
+        "goal_assists": 3.0,
+        "inside_50s": 2.0,
+        "uncontested_possessions": 1.0,
+        "clangers": -2.0,
+    }
+    if any(column in out.columns for column in contested_weights):
+        score = np.zeros(len(out), dtype=float)
+        for column, weight in contested_weights.items():
+            if column in out.columns:
+                score += weight * out[column].to_numpy(dtype=float)
+        out["contested_score"] = score
+
     return out
+
+
+def player_identity(df: pd.DataFrame) -> pd.Series:
+    """A key that follows one player across seasons and club changes.
+
+    Uses the AFL Tables player ID where it exists (it is missing on a handful of
+    rows) and falls back to name plus club, which keeps two players who share a
+    name apart.
+    """
+    fallback = df["player"].astype(str)
+    if "team" in df.columns:
+        fallback = fallback + "|" + df["team"].astype(str)
+    if "player_id" not in df.columns:
+        return fallback
+    identifier = df["player_id"]
+    return np.where(identifier.notna(), "id:" + identifier.astype(str), fallback)
+
+
+def add_history_features(df: pd.DataFrame) -> pd.DataFrame:
+    """How much this player has polled in *previous* seasons.
+
+    Prior polling is one of the strongest signals available: umpires reward the
+    same kinds of players year after year, and a player who polled heavily last
+    season is usually still in that role.
+
+    **This looks at completed seasons only, never the current one.** Brownlow
+    votes are not published until count night, so a model at round 12 does not
+    know what anybody polled in round 11 of the same season. Using within-season
+    votes would leak information nobody actually has. Performance-based form
+    (see :func:`add_form_features`) is different, because those statistics are
+    public the moment the game ends.
+    """
+    out = df.copy()
+    if "votes" not in out.columns or "season" not in out.columns:
+        return out
+
+    out["_player_key"] = player_identity(out)
+
+    per_season = (
+        out.groupby(["_player_key", "season"], dropna=False)
+        .agg(season_votes=("votes", "sum"), season_games=("votes", "size"))
+        .reset_index()
+        .sort_values(["_player_key", "season"])
+    )
+
+    grouped = per_season.groupby("_player_key", sort=False)
+    # shift(1) is what makes this causal: season S sees up to S-1 and no further.
+    per_season["prior_season_votes"] = grouped["season_votes"].shift(1).fillna(0.0)
+    prior_games = grouped["season_games"].shift(1).fillna(0.0)
+    per_season["prior_season_votes_per_game"] = np.where(
+        prior_games > 0, per_season["prior_season_votes"] / prior_games.replace(0, np.nan), 0.0
+    )
+    per_season["career_votes_before"] = (
+        grouped["season_votes"].cumsum() - per_season["season_votes"]
+    )
+    career_games = grouped["season_games"].cumsum() - per_season["season_games"]
+    per_season["career_votes_per_game_before"] = np.where(
+        career_games > 0,
+        per_season["career_votes_before"] / career_games.replace(0, np.nan),
+        0.0,
+    )
+    per_season["seasons_before"] = grouped.cumcount()
+    per_season["has_polled_before"] = (per_season["career_votes_before"] > 0).astype(float)
+
+    columns = [
+        "_player_key", "season", "prior_season_votes", "prior_season_votes_per_game",
+        "career_votes_before", "career_votes_per_game_before", "seasons_before",
+        "has_polled_before",
+    ]
+    out = out.merge(per_season[columns], on=["_player_key", "season"], how="left")
+    return out.drop(columns=["_player_key"])
+
+
+#: Statistics whose recent average says something about a player's current form.
+FORM_STATS = ("fantasy_points", "disposals", "contested_possessions", "goals")
+
+
+def add_form_features(df: pd.DataFrame, halflife: float = 4.0) -> pd.DataFrame:
+    """A rolling rating of how a player has been going lately.
+
+    This is the "lagging" idea: rather than judging a game only on its own
+    statistics, carry a decaying average of the player's recent matches. A
+    halflife of four games means a match four rounds ago counts half as much as
+    last week's.
+
+    Every value is shifted by one match, so a row never sees its own game. Match
+    statistics are public as soon as a game finishes, so unlike vote history this
+    can legitimately use earlier rounds of the same season.
+
+    This is a proxy built from public statistics. It is not the AFL's official
+    Player Ratings, which are proprietary and not in this dataset.
+    """
+    out = add_derived_stats(df, FeatureConfig())
+    if "season" not in out.columns:
+        return out
+
+    out["_player_key"] = player_identity(out)
+    order = ["_player_key", "season"]
+    if "round_number" in out.columns:
+        order.append("round_number")
+    out = out.sort_values(order).reset_index(drop=True)
+
+    grouped = out.groupby("_player_key", sort=False)
+    for stat in FORM_STATS:
+        if stat not in out.columns:
+            continue
+        # shift(1) first, so the rating entering a match excludes that match.
+        lagged = grouped[stat].shift(1)
+        out[f"{stat}_form"] = (
+            lagged.groupby(out["_player_key"])
+            .transform(lambda s: s.ewm(halflife=halflife, ignore_na=True).mean())
+            .fillna(0.0)
+        )
+
+    out["games_played_before"] = grouped.cumcount().astype(float)
+    return out.drop(columns=["_player_key"])
 
 
 def _within_match_zscore(values: pd.Series, match_id: pd.Series) -> np.ndarray:
@@ -154,6 +330,10 @@ class FeatureBuilder:
 
         config = self.config
         out = add_derived_stats(df, config)
+        if config.include_form:
+            out = add_form_features(out, halflife=config.form_halflife)
+        if config.include_history:
+            out = add_history_features(out)
         match_id = out["match_id"]
         names: List[str] = []
 
@@ -161,10 +341,24 @@ class FeatureBuilder:
             if stat in out.columns:
                 names.append(stat)
 
-        for stat in ("fantasy_points", "goal_involvements", "clean_disposals",
-                     "free_kick_differential", "shots"):
+        for stat in ("fantasy_points", "contested_score", "goal_involvements",
+                     "clean_disposals", "free_kick_differential", "shots"):
             if stat in out.columns:
                 names.append(stat)
+
+        if config.include_form:
+            for stat in FORM_STATS:
+                if f"{stat}_form" in out.columns:
+                    names.append(f"{stat}_form")
+            if "games_played_before" in out.columns:
+                names.append("games_played_before")
+
+        if config.include_history:
+            for stat in ("prior_season_votes", "prior_season_votes_per_game",
+                         "career_votes_before", "career_votes_per_game_before",
+                         "seasons_before", "has_polled_before"):
+                if stat in out.columns:
+                    names.append(stat)
 
         if config.include_team_context:
             if "win" in out.columns:
@@ -205,6 +399,30 @@ class FeatureBuilder:
                     dtype=float
                 )
                 names.append(f"{stat}_x_win")
+
+        # Match-best flags and interactions go last, because they are built from
+        # the within-match columns created above.
+        if config.include_match_best:
+            for stat in DEFAULT_MATCH_BEST_STATS:
+                if stat not in out.columns:
+                    continue
+                best = out.groupby(match_id)[stat].transform("max")
+                column = f"{stat}_match_best"
+                out[column] = ((out[stat] >= best) & (best > 0)).astype(float)
+                names.append(column)
+
+        if config.include_interactions:
+            pairs = config.interaction_pairs or DEFAULT_INTERACTION_PAIRS
+            for left, right in pairs:
+                if left not in out.columns or right not in out.columns:
+                    continue
+                column = f"{left}_x_{right}"
+                if column in names:
+                    continue
+                out[column] = (
+                    out[left].to_numpy(dtype=float) * out[right].to_numpy(dtype=float)
+                )
+                names.append(column)
 
         for stat in config.extra:
             if stat in out.columns and stat not in names:

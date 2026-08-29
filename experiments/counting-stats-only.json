@@ -8,7 +8,10 @@
   "n_simulations": 10000,
   "seed": 0,
   "ineligible": [],
+  "annotations": {},
   "compare_baseline": true,
+  "cross_validate": true,
+  "cv_min_train_seasons": 7,
   "features": {
     "within_match_stats": [],
     "win_interactions": [],

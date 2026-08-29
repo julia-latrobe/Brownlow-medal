@@ -1,0 +1,19 @@
+{
+  "name": "past-polling",
+  "model": "plackett_luce",
+  "alpha": 1.0,
+  "train_seasons": "2015-2024",
+  "test_seasons": "2025",
+  "predict_seasons": "2026",
+  "n_simulations": 10000,
+  "seed": 0,
+  "ineligible": [],
+  "annotations": {},
+  "compare_baseline": true,
+  "cross_validate": true,
+  "cv_min_train_seasons": 7,
+  "features": {
+    "include_history": true
+  },
+  "notes": "Reputation. Adds how much each player polled in PREVIOUS seasons - last year's votes, career votes, and votes per game. Never uses the current season's votes, which nobody knows until count night. Load from 2013 so the early training seasons have history behind them."
+}

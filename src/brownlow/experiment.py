@@ -77,6 +77,16 @@ class ExperimentConfig:
     seed: int = 0
     ineligible: List[str] = field(default_factory=list)
     compare_baseline: bool = True
+    #: Short labels shown beside a player's name on the results page, e.g.
+    #: ``{"Some Player": "Omitted"}``. Purely presentational -- annotations
+    #: never affect the model, the projection or the simulation.
+    annotations: Dict[str, str] = field(default_factory=dict)
+    #: Also score the scenario with walk-forward cross-validation. Slower (one
+    #: fit per fold), but a single held-out season is a noisy way to rank
+    #: scenarios whose differences are small -- which these are. The results
+    #: page ranks by this when it is present.
+    cross_validate: bool = False
+    cv_min_train_seasons: int = 7
     features: Dict[str, Any] = field(default_factory=dict)
     notes: str = ""
 
@@ -165,6 +175,36 @@ def run_experiment(
             except Exception:  # a baseline failure must never sink the main run
                 pass
 
+    # -- Cross-validation, when the scenario asks for it ---------------
+    if config.cross_validate:
+        # Every season with a known result, not just the training window. The
+        # extra early seasons matter: history features look back a season or
+        # two, so cutting them off would quietly handicap the scenarios that
+        # use them. The season being projected has no votes and is excluded.
+        counted = df.groupby("season")["votes"].apply(lambda s: s.notna().all())
+        scored_seasons = [
+            int(season) for season, complete in counted.items()
+            if complete and int(season) not in set(predict_seasons)
+        ]
+        cv_frame = df[df["season"].isin(scored_seasons)]
+
+        def factory():
+            return config.build_model()
+
+        try:
+            folds = rolling_origin_cv(
+                cv_frame, factory, min_train_seasons=config.cv_min_train_seasons
+            )
+            results["cv_folds"] = folds
+            results["cv_metrics"] = {
+                **{k: float(v) for k, v in summarise_cv(folds).items()},
+                "n_folds": int(len(folds)),
+                "fold_seasons": [int(s) for s in folds["fold_test_season"]],
+            }
+        except ValueError as error:
+            # Not enough seasons to fold. Say so rather than failing the run.
+            results["cv_metrics"] = {"error": str(error)}
+
     # -- Step 3: the unknown season -----------------------------------
     if predict_seasons:
         future = df[df["season"].isin(predict_seasons)]
@@ -178,9 +218,16 @@ def run_experiment(
                 ineligible=config.ineligible,
                 seed=config.seed,
             )
+            # Join on name and club together: joining on name alone would
+            # give two players who share a name each other's numbers.
+            join_keys = ["player"]
+            if "team" in leaderboard.columns and "team" in simulated.columns:
+                join_keys.append("team")
             leaderboard = leaderboard.merge(
-                simulated.drop(columns=["rank", "team"], errors="ignore"),
-                on="player",
+                simulated.drop(columns=["rank"], errors="ignore")
+                if "team" in join_keys
+                else simulated.drop(columns=["rank", "team"], errors="ignore"),
+                on=join_keys,
                 how="left",
             ).sort_values("predicted_votes", ascending=False)
             leaderboard["rank"] = np.arange(1, len(leaderboard) + 1)
@@ -214,8 +261,9 @@ def write_outputs(
         columns = [
             c
             for c in (
-                "season", "round", "match_id", "player", "team", "opponent",
-                "votes", "predicted_votes", "p_3_votes", "p_2_votes",
+                "season", "round", "match_id", "date", "local_start_time",
+                "venue", "player", "team", "opponent", "is_home", "votes",
+                "predicted_votes", "p_3_votes", "p_2_votes",
                 "p_1_vote", "p_any_votes", "score",
             )
             if c in frame.columns
@@ -235,6 +283,7 @@ def write_outputs(
         "test_seasons": results["test_seasons"],
         "predict_seasons": results["predict_seasons"],
         "holdout_metrics": results.get("holdout_metrics"),
+        "cv_metrics": results.get("cv_metrics"),
         "comparison": results.get("comparison"),
         "optimisation": getattr(model, "optimisation_", None),
     }

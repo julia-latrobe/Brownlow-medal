@@ -1,0 +1,20 @@
+{
+  "name": "recent-form",
+  "model": "plackett_luce",
+  "alpha": 1.0,
+  "train_seasons": "2015-2024",
+  "test_seasons": "2025",
+  "predict_seasons": "2026",
+  "n_simulations": 10000,
+  "seed": 0,
+  "ineligible": [],
+  "annotations": {},
+  "compare_baseline": true,
+  "cross_validate": true,
+  "cv_min_train_seasons": 7,
+  "features": {
+    "include_form": true,
+    "form_halflife": 4.0
+  },
+  "notes": "Form. Carries a decaying average of each player's recent matches into the next one, so a player in a hot patch starts ahead. A game four rounds ago counts half as much as last week's. Always lagged by one match, so a game never sees itself. Built from public match statistics - this is not the AFL's official Player Ratings, which are proprietary."
+}

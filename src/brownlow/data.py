@@ -40,6 +40,7 @@ COLUMN_MAP = {
     "Season": "season",
     "Round": "round",
     "Date": "date",
+    "Local.start.time": "local_start_time",
     "Venue": "venue",
     "Player": "player",
     "First.name": "first_name",
@@ -199,6 +200,13 @@ def tidy(raw: pd.DataFrame) -> pd.DataFrame:
         player = player.where(player.notna() & player.astype(str).str.strip().ne(""))
         df["player"] = player.fillna(rebuilt.replace("", pd.NA))
     df["player"] = df["player"].astype("object").fillna("Unknown player").astype(str)
+
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    if "local_start_time" in df.columns:
+        # Stored as HHMM (e.g. 1930). Kept numeric so that matches played on the
+        # same day sort into the order they were actually played.
+        df["local_start_time"] = pd.to_numeric(df["local_start_time"], errors="coerce")
 
     df["round"] = df["round"].astype(str).str.strip()
     df["is_final"] = df["round"].isin(FINALS_ROUNDS)

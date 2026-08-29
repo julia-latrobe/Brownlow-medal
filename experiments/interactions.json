@@ -1,0 +1,20 @@
+{
+  "name": "interactions",
+  "model": "plackett_luce",
+  "alpha": 1.0,
+  "train_seasons": "2015-2024",
+  "test_seasons": "2025",
+  "predict_seasons": "2026",
+  "n_simulations": 10000,
+  "seed": 0,
+  "ineligible": [],
+  "annotations": {},
+  "compare_baseline": true,
+  "cross_validate": true,
+  "cv_min_train_seasons": 7,
+  "features": {
+    "include_interactions": true,
+    "include_match_best": true
+  },
+  "notes": "Combinations. The model scores each player as a straight sum of their features, so it cannot by itself express 'had a lot of the ball AND kicked goals' - only the sum of the two. This adds explicit products of paired features, plus flags for leading the match in a statistic, which is the kind of thing umpires actually notice."
+}
