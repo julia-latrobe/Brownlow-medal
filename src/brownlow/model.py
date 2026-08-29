@@ -155,7 +155,7 @@ class BaseVoteModel:
         missing = [n for n in self.feature_names_ if n not in df.columns]
         if missing:
             raise ValueError(f"Features missing from input: {missing}")
-        df = df.sort_values("match_id", kind="stable").reset_index(drop=True)
+        df = df.sort_values("match_id", kind="stable")
         X = df[self.feature_names_].to_numpy(dtype=float)
         return df, X
 
@@ -167,7 +167,10 @@ class BaseVoteModel:
         for value in (3.0, 2.0, 1.0):
             rows = np.flatnonzero(votes == value)
             if len(rows) != index.n_matches:
-                counts = pd.Series(votes == value).groupby(df["match_id"]).sum()
+                # Group positionally: the frame's index is the caller's, not a
+                # fresh range, so aligning on it would not be safe here.
+                counts = pd.Series(votes == value).groupby(
+                    df["match_id"].to_numpy()).sum()
                 bad = counts[counts != 1].index.tolist()[:5]
                 raise ValueError(
                     f"Expected exactly one {int(value)}-vote player per match. "
@@ -179,7 +182,23 @@ class BaseVoteModel:
         return picks
 
     def predict_scores(self, df: pd.DataFrame) -> np.ndarray:
+        """Each player's latent quality score, in the caller's own row order.
+
+        Scoring sorts rows internally, so the result is realigned before it is
+        returned. Getting that wrong hands back a correctly-computed array of
+        scores attached to the wrong players, which is the sort of bug that
+        looks like a bad model rather than a bad join.
+        """
         raise NotImplementedError
+
+    def _scores_in_input_order(self, df: pd.DataFrame, prepared: pd.DataFrame,
+                               scores: np.ndarray) -> np.ndarray:
+        """Put scores computed on the sorted frame back into the input's order."""
+        return (
+            pd.Series(scores, index=prepared.index)
+            .reindex(df.index)
+            .to_numpy(dtype=float)
+        )
 
     # -- prediction ----------------------------------------------------
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -358,8 +377,9 @@ class PlackettLuceModel(BaseVoteModel):
     def predict_scores(self, df: pd.DataFrame) -> np.ndarray:
         if self.coefficients_ is None:
             raise ValueError("Model is not fitted yet.")
-        df, X = self._prepare(df, fit=False)
-        return self.scaler_.transform(X) @ self.coefficients_
+        prepared, X = self._prepare(df, fit=False)
+        scores = self.scaler_.transform(X) @ self.coefficients_
+        return self._scores_in_input_order(df, prepared, scores)
 
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         """Expected votes per player, using the exact Plackett-Luce marginals.
@@ -475,7 +495,8 @@ class WeightedLogisticModel(BaseVoteModel):
 
     def predict_scores(self, df: pd.DataFrame) -> np.ndarray:
         prepared, X = self._prepare(df, fit=False)
-        return self.intercept_ + self.scaler_.transform(X) @ self.coefficients_
+        scores = self.intercept_ + self.scaler_.transform(X) @ self.coefficients_
+        return self._scores_in_input_order(df, prepared, scores)
 
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         prepared, X = self._prepare(df, fit=False)
