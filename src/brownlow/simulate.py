@@ -12,6 +12,11 @@ Each simulated match draws the 3-2-1 order from the fitted Plackett-Luce
 probabilities, using the Gumbel top-k trick: adding independent Gumbel noise to
 each player's log-probability and taking the top three is *exactly* equivalent
 to drawing them one at a time without replacement.
+
+Two corrections stop the result claiming more certainty than it has earned. Both
+were measured on held-out seasons; see :data:`DEFAULT_TEMPERATURE` and
+:data:`DEFAULT_PLAYER_SHOCK`. Neither touches expected votes or the order of the
+leaderboard, which come from the exact marginals and never from a simulation.
 """
 
 from __future__ import annotations
@@ -28,6 +33,29 @@ from brownlow.model import MatchIndex
 #: character, so it cannot collide with anything in a real name.
 _KEY_SEPARATOR = "\u241f"
 
+#: How sharp the fitted probabilities are taken to be. Below 1.0 they are
+#: softened. The model is confident in a way six held-out seasons do not
+#: support, and softening its scores by this much fit those seasons better than
+#: leaving them alone.
+DEFAULT_TEMPERATURE = 0.8
+
+#: How uncertain we are about the players themselves, in score units.
+#:
+#: Without this, every simulated season uses exactly the same estimate of how
+#: good each player is, and only the umpires' choice varies. That treats the
+#: model's read on a player as perfect. It is not: Matt Rowell was projected at
+#: about nineteen votes for 2025 and polled thirty-nine, which was not bad luck
+#: with the dice but a misjudged player, and the simulation had no way to
+#: entertain the possibility.
+#:
+#: So each simulated season nudges every player up or down, held constant across
+#: his own matches. Checked against 240 held-out player-seasons, the intervals
+#: without it were far too tight -- a stated 95% range held the truth 84% of the
+#: time, and a 50% range held it 46%. At 0.5 those become 96% and 58%. Fitted
+#: independently against the seasons' actual medallists, the best value was also
+#: in the 0.4 to 0.7 range.
+DEFAULT_PLAYER_SHOCK = 0.5
+
 
 def simulate_season(
     predictions: pd.DataFrame,
@@ -35,6 +63,8 @@ def simulate_season(
     ineligible: Optional[Iterable[str]] = None,
     seed: Optional[int] = 0,
     player_column: str = "player",
+    temperature: float = DEFAULT_TEMPERATURE,
+    player_shock: float = DEFAULT_PLAYER_SHOCK,
 ) -> pd.DataFrame:
     """Simulate the season repeatedly and summarise each player's outcomes.
 
@@ -51,11 +81,26 @@ def simulate_season(
         they are excluded when deciding the winner of each simulated season.
     seed:
         Seed for reproducibility. Pass ``None`` for a different draw each run.
+    temperature:
+        Softens the fitted probabilities. See :data:`DEFAULT_TEMPERATURE`.
+        ``1.0`` takes them exactly as the model gives them.
+    player_shock:
+        How much the model's read on each player might be wrong, in score
+        units. See :data:`DEFAULT_PLAYER_SHOCK`. ``0.0`` assumes it is exactly
+        right, which is what makes the ranges too narrow.
 
     Returns
     -------
     A leaderboard with mean/median simulated votes, a credible interval, and
     the probability of winning or finishing top 5.
+
+    Notes
+    -----
+    Neither correction changes ``expected_votes`` or the leaderboard order --
+    those come from the exact Plackett-Luce marginals in
+    :meth:`~brownlow.model.PlackettLuceModel.predict`, which no simulation
+    touches. What they change is how wide the ranges are and how confident the
+    probabilities, which is where the model was overstating itself.
     """
     required = {"p_3_votes", "match_id", player_column}
     missing = required - set(predictions.columns)
@@ -86,13 +131,30 @@ def simulate_season(
     totals = np.zeros((n_simulations, len(players)), dtype=np.float32)
 
     rng = np.random.default_rng(seed)
-    log_p = np.log(np.maximum(df["p_3_votes"].to_numpy(dtype=float), 1e-300))
+    # Raising every probability to a power and renormalising is exactly a
+    # softmax temperature, so this needs nothing but the probabilities
+    # themselves. The renormalising can be skipped: Gumbel-top-k is unchanged by
+    # adding the same constant to every player in a match.
+    log_p = float(temperature) * np.log(
+        np.maximum(df["p_3_votes"].to_numpy(dtype=float), 1e-300))
     sim_rows = np.arange(n_simulations)
+
+    # One draw per player per simulated season, held constant across his own
+    # matches -- a player we have misjudged is misjudged all year, not
+    # independently in each game.
+    shocks = (
+        rng.normal(scale=float(player_shock),
+                   size=(n_simulations, len(players))).astype(np.float32)
+        if player_shock > 0.0 else None
+    )
 
     for start, size in zip(index.starts, index.sizes):
         block = slice(start, start + size)
+        weights = log_p[block]
+        if shocks is not None:
+            weights = weights[None, :] + shocks[:, player_codes[block]]
         # Gumbel-top-k sampling reproduces sequential draws without replacement.
-        noisy = log_p[block] + rng.gumbel(size=(n_simulations, size))
+        noisy = weights + rng.gumbel(size=(n_simulations, size))
         top3 = np.argpartition(-noisy, kth=min(2, size - 1), axis=1)[:, :3]
         ordered = np.take_along_axis(top3, np.argsort(-np.take_along_axis(noisy, top3, 1), 1), 1)
         codes = player_codes[start:start + size]

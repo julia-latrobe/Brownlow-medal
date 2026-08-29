@@ -387,6 +387,43 @@ Each run writes four things to `data/output/<name>/`:
 | --- | --- |
 | `predictions.csv` | One row per player per match: vote probabilities and expected votes. |
 | `leaderboard.csv` | One row per player: projected total, win probability, likely range. |
+### How sure the model actually is
+
+Projected votes and the simulated range answer different questions, and only the
+first is a point estimate. `expected_votes` comes from the exact Plackett-Luce
+marginals — no simulation involved — and is what the leaderboard is ordered by.
+The range and the win probabilities come from simulating the season.
+
+Those simulated numbers used to be far too confident. Checked against 240
+held-out player-seasons, a stated 95% range held the truth **84%** of the time
+and a stated 50% range held it **46%**. Two corrections fix that, both in
+`simulate.py` and both fitted on held-out seasons:
+
+- **A softening of the probabilities** (`simulation_temperature`, default 0.8).
+  The fitted scores are sharper than six held-out seasons support.
+- **Uncertainty about the players themselves** (`player_shock`, default 0.5).
+  Without it every simulated season reuses exactly the same read on every
+  player, so only the umpires' choice varies. That treats the model's judgement
+  as perfect. It is not — Matt Rowell was projected at about nineteen votes for
+  2025 and polled thirty-nine, which was a misjudged player rather than an
+  unlucky one, and the simulation had no way to entertain it. Each simulated
+  season now nudges every player up or down, held constant across his own
+  matches.
+
+With both, the 95% range holds the truth 96% of the time and the 50% range 58%.
+Fitted independently against the actual medallists of six seasons, the best
+shock was also in the 0.4–0.7 range.
+
+Neither correction moves a projected vote total or the order of the leaderboard,
+because neither touches the closed-form marginals. What they change is how wide
+the ranges are and how confident the probabilities. Set
+`"simulation_temperature": 1.0` and `"player_shock": 0.0` in a config to see the
+uncorrected version.
+
+One consequence worth knowing: `mean_votes` in `leaderboard.csv` is the mean of
+the *widened* simulation and no longer equals `expected_votes`. Widening pulls
+the leaders back towards the field. `expected_votes` remains the projection.
+
 | `metrics.json` | Holdout accuracy plus the exact config used — self-describing. |
 | `coefficients.csv` | What the model learned, largest effect first. |
 
