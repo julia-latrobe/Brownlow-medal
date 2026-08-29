@@ -265,7 +265,7 @@ def write_outputs(
         columns = [
             c
             for c in (
-                "season", "round", "match_id", "date", "local_start_time",
+                "season", "round", "afl_round", "match_id", "date", "local_start_time",
                 "venue", "player", "team", "opponent", "is_home", "votes",
                 "predicted_votes", "expected_votes", "p_3_votes", "p_2_votes",
                 "p_1_vote", "p_any_votes", "score",

@@ -118,6 +118,13 @@ class FeatureConfig:
     #: its features, so "led the game for disposals" is something it cannot
     #: express from the raw count alone.
     include_match_best: bool = False
+    #: Playing position, derived from statistical profile, plus its interactions
+    #: with the key stats. Midfielders take 66% of the votes from 29% of the
+    #: players, so the same statistic means very different things by role.
+    include_position: bool = False
+    position_interactions: Sequence[str] = (
+        "disposals", "goals", "contested_possessions", "marks", "tackles",
+    )
     #: Prior-season and career Brownlow polling. Needs a season or two of
     #: history loaded before the training window to be worth anything.
     include_history: bool = False
@@ -352,6 +359,10 @@ class FeatureBuilder:
 
         config = self.config
         out = add_derived_stats(df, config)
+        if config.include_position:
+            from brownlow.positions import add_position_features
+
+            out = add_position_features(out, stats=config.position_interactions)
         if config.include_form:
             out = add_form_features(out, halflife=config.form_halflife)
         if config.include_history:
@@ -367,6 +378,21 @@ class FeatureBuilder:
                      "clean_disposals", "free_kick_differential", "shots"):
             if stat in out.columns:
                 names.append(stat)
+
+        if config.include_position:
+            from brownlow.positions import POSITIONS
+
+            # One dummy is dropped: with a softmax taken within a match the four
+            # dummies would be collinear with the match itself.
+            for name in POSITIONS[1:]:
+                column = f"is_{name.lower()}"
+                if column in out.columns:
+                    names.append(column)
+            for stat in config.position_interactions:
+                for name in POSITIONS:
+                    column = f"{stat}_x_{name.lower()}"
+                    if column in out.columns:
+                        names.append(column)
 
         if config.include_form:
             for stat in FORM_STATS:

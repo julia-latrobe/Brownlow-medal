@@ -132,8 +132,8 @@ def collect_run(run_dir: Path, detail_players: Optional[int] = DEFAULT_DETAIL_PL
     }
 
 
-def _round_number(value: Any) -> Any:
-    """Round labels are mostly numeric, but finals use codes like 'GF'."""
+def _round_label(value: Any) -> Any:
+    """Round labels are mostly numeric, but finals and Opening Round are words."""
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -185,7 +185,7 @@ def _collect_games(predictions_file: Path, board: pd.DataFrame, limit: Optional[
         rows = []
         for record in group.to_dict(orient="records"):
             rows.append([
-                _round_number(record.get("round")),
+                _round_label(record.get("afl_round", record.get("round"))),
                 opponent_index.get(str(record.get("opponent")), -1),
                 1 if record.get("is_home") else 0,
                 cell(record, "expected_votes", 4),
@@ -223,10 +223,15 @@ def _collect_rounds(predictions_file: Path, top_n: int = 5):
     if "date" in frame.columns:
         frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
     frame["_round_sort"] = pd.to_numeric(frame["round"], errors="coerce").fillna(9999)
+    # Show the AFL's own round label. Its numbering differs from the source's
+    # from 2024 on, and a page people follow during the count has to match the
+    # numbers being read out.
+    if "afl_round" not in frame.columns:
+        frame["afl_round"] = frame["round"].astype(str)
 
     rounds = []
     for (round_sort, round_label), round_rows in frame.groupby(
-        ["_round_sort", "round"], sort=True
+        ["_round_sort", "afl_round"], sort=True
     ):
         matches = []
         for match_id, match_rows in round_rows.groupby("match_id", sort=False):
