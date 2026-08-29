@@ -243,7 +243,17 @@ def add_history_features(df: pd.DataFrame) -> pd.DataFrame:
         "career_votes_before", "career_votes_per_game_before", "seasons_before",
         "has_polled_before",
     ]
+    # Transforming an already-transformed frame is a reasonable thing for a
+    # caller to do. Without this the merge would suffix the new columns _x/_y
+    # and the features would silently go missing under their expected names.
+    out = out.drop(columns=[c for c in columns if c != "_player_key" and c != "season"
+                            and c in out.columns])
+    # merge() returns a fresh RangeIndex. A left merge keeps row order, so the
+    # caller's index can be put straight back -- and it must be, because callers
+    # realign on it. Losing it here silently turns their scores into NaN.
+    original_index = out.index
     out = out.merge(per_season[columns], on=["_player_key", "season"], how="left")
+    out.index = original_index
     return out.drop(columns=["_player_key"])
 
 

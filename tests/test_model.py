@@ -191,7 +191,10 @@ class TestPlackettLuceModel:
         """
         from brownlow.features import FeatureConfig
 
-        for config in (FeatureConfig(), FeatureConfig(include_form=True)):
+        for config in (FeatureConfig(),
+                       FeatureConfig(include_form=True),
+                       FeatureConfig(include_history=True),
+                       FeatureConfig(include_history=True, include_form=True)):
             model = PlackettLuceModel(feature_config=config).fit(small_season)
             scores = model.predict_scores(small_season)
 
@@ -211,7 +214,8 @@ class TestPlackettLuceModel:
         from brownlow.features import FeatureConfig
 
         model = PlackettLuceModel(
-            feature_config=FeatureConfig(include_form=True)).fit(small_season)
+            feature_config=FeatureConfig(include_form=True,
+                                         include_history=True)).fit(small_season)
         predictions = model.predict(small_season)
         scores = pd.Series(model.predict_scores(small_season), index=small_season.index)
         np.testing.assert_allclose(
