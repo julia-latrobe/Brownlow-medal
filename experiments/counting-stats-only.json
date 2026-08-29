@@ -1,0 +1,19 @@
+{
+  "name": "counting-stats-only",
+  "model": "plackett_luce",
+  "alpha": 1.0,
+  "train_seasons": "2015-2024",
+  "test_seasons": "2025",
+  "predict_seasons": "2026",
+  "n_simulations": 10000,
+  "seed": 0,
+  "ineligible": [],
+  "compare_baseline": true,
+  "features": {
+    "within_match_stats": [],
+    "win_interactions": [],
+    "include_shares": false,
+    "include_ranks": false
+  },
+  "notes": "Raw counting stats only - no within-match comparisons. Shows what the relative features are worth."
+}

@@ -1,0 +1,31 @@
+{
+  // Terminal -> Run Task... picks one of these.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Install (editable, with dev tools)",
+      "type": "shell",
+      "command": "pip install -e '.[data,dev]'",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run tests",
+      "type": "shell",
+      "command": "pytest -q",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Lint",
+      "type": "shell",
+      "command": "ruff check .",
+      "problemMatcher": []
+    },
+    {
+      "label": "Rebuild the results page",
+      "type": "shell",
+      "command": "brownlow report",
+      "problemMatcher": []
+    }
+  ]
+}

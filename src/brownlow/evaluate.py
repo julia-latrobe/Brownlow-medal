@@ -1,0 +1,260 @@
+"""Scoring the model honestly, and cross-validating it the right way.
+
+A note on splits
+----------------
+Do **not** split this data randomly. Rows from the same match are not
+independent -- if the 3-vote getter lands in train and the 2-vote getter in
+test, the model has already seen the answer. And the game changes over time
+(rule changes, interchange caps, the 2020 shortened quarters), so a model
+validated on shuffled rows will flatter itself.
+
+Every split here is therefore **by season**, and the cross-validation is
+walk-forward: train on the past, test on the next season, roll forward. That is
+the same shape as the real task -- fit on completed seasons, predict a season
+you have not seen.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Sequence
+from typing import Callable, Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+from scipy.stats import kendalltau, spearmanr
+
+from brownlow.model import BaseVoteModel, MatchIndex, PlackettLuceModel, segment_softmax
+
+
+def _top_k_by_match(df: pd.DataFrame, column: str, k: int = 3) -> pd.DataFrame:
+    order = df.sort_values(["match_id", column], ascending=[True, False])
+    return order.groupby("match_id").head(k)
+
+
+def match_metrics(predictions: pd.DataFrame, score_column: str = "predicted_votes") -> Dict:
+    """How well did we pick the vote-getters, match by match?
+
+    ``top1_accuracy``
+        Share of matches where our highest-rated player actually got the 3.
+    ``top3_recall``
+        Of the three players who polled, what share did we have in our top 3?
+        This is the fairest single number: getting the right three players in
+        the wrong order is nearly right, and this metric says so.
+    ``exact_order_accuracy``
+        Share of matches where we got all three players *and* their order right.
+        This is deliberately brutal -- even excellent models sit low here.
+    """
+    known = predictions[predictions["votes"].notna()].copy()
+    if known.empty:
+        raise ValueError("No matches with known votes to score against.")
+
+    known["predicted_rank"] = (
+        known.groupby("match_id")[score_column].rank(ascending=False, method="first")
+    )
+    n_matches = known["match_id"].nunique()
+
+    top1 = known[(known["predicted_rank"] == 1) & (known["votes"] == 3)]
+    top3 = known[(known["predicted_rank"] <= 3) & (known["votes"] > 0)]
+
+    exact = known[known["votes"] > 0].copy()
+    exact["actual_rank"] = 4.0 - exact["votes"]
+    exact_hits = (
+        exact.assign(hit=exact["predicted_rank"] == exact["actual_rank"])
+        .groupby("match_id")["hit"]
+        .all()
+    )
+
+    return {
+        "n_matches": int(n_matches),
+        "top1_accuracy": float(len(top1) / n_matches),
+        "top3_recall": float(len(top3) / (3 * n_matches)),
+        "exact_order_accuracy": float(exact_hits.mean()),
+        "mean_absolute_error": float((known[score_column] - known["votes"]).abs().mean()),
+    }
+
+
+def plackett_luce_log_likelihood(predictions: pd.DataFrame) -> Dict:
+    """Held-out log-likelihood under the fitted model, per match.
+
+    This is the strictest test: it asks whether the *probabilities* are right,
+    not just the ordering. A useful reference point is the log-likelihood of
+    guessing at random, which for a 44-player match is about -11.3.
+    """
+    if "score" not in predictions.columns:
+        raise ValueError("Needs the 'score' column from PlackettLuceModel.predict.")
+    df = predictions[predictions["votes"].notna()].sort_values("match_id", kind="stable")
+    df = df.reset_index(drop=True)
+    index = MatchIndex(df["match_id"].to_numpy())
+
+    scores = df["score"].to_numpy(dtype=float)
+    votes = df["votes"].to_numpy(dtype=float)
+    available = np.ones(len(scores), dtype=bool)
+    total = 0.0
+
+    for value in (3.0, 2.0, 1.0):
+        rows = np.flatnonzero(votes == value)
+        if len(rows) != index.n_matches:
+            raise ValueError("Every match must have exactly one 3, 2 and 1 vote getter.")
+        _, log_norm = segment_softmax(scores, index, available)
+        total += float(scores[rows].sum() - log_norm.sum())
+        available[rows] = False
+
+    n_random = float(np.mean(index.sizes))
+    random_baseline = -(np.log(n_random) + np.log(n_random - 1) + np.log(n_random - 2))
+    return {
+        "log_likelihood": total,
+        "log_likelihood_per_match": total / index.n_matches,
+        "random_baseline_per_match": float(random_baseline),
+    }
+
+
+def season_metrics(predictions: pd.DataFrame, top_n: int = 10) -> Dict:
+    """Did we get the *count* right -- the leaderboard, not the single match?"""
+    known = predictions[predictions["votes"].notna()]
+    if known.empty:
+        raise ValueError("No matches with known votes to score against.")
+
+    totals = (
+        known.groupby("player")
+        .agg(predicted=("predicted_votes", "sum"), actual=("votes", "sum"))
+        .reset_index()
+    )
+    predicted_order = totals.sort_values("predicted", ascending=False)
+    actual_order = totals.sort_values("actual", ascending=False)
+
+    predicted_winner = predicted_order.iloc[0]["player"]
+    actual_winner = actual_order.iloc[0]["player"]
+    actual_top = set(actual_order.head(top_n)["player"])
+    predicted_top = set(predicted_order.head(top_n)["player"])
+
+    return {
+        "n_players": int(len(totals)),
+        "spearman": float(spearmanr(totals["predicted"], totals["actual"]).statistic),
+        "kendall_tau": float(kendalltau(totals["predicted"], totals["actual"]).statistic),
+        "winner_correct": bool(predicted_winner == actual_winner),
+        "predicted_winner": str(predicted_winner),
+        "actual_winner": str(actual_winner),
+        f"top{top_n}_overlap": float(len(actual_top & predicted_top) / top_n),
+        "top5_overlap": float(
+            len(
+                set(actual_order.head(5)["player"]) & set(predicted_order.head(5)["player"])
+            )
+            / 5
+        ),
+        "season_total_mae": float((totals["predicted"] - totals["actual"]).abs().mean()),
+    }
+
+
+def evaluate_season(predictions: pd.DataFrame, top_n: int = 10) -> Dict:
+    """All of the above in one dictionary, ready to write to metrics.json."""
+    metrics: Dict = {}
+    metrics.update(match_metrics(predictions))
+    metrics.update(season_metrics(predictions, top_n=top_n))
+    if "score" in predictions.columns:
+        try:
+            metrics.update(plackett_luce_log_likelihood(predictions))
+        except ValueError:
+            pass
+    return metrics
+
+
+def backtest(
+    df: pd.DataFrame,
+    model: Optional[BaseVoteModel] = None,
+    train_seasons: Optional[Iterable[int]] = None,
+    test_seasons: Optional[Iterable[int]] = None,
+) -> Dict:
+    """Fit on ``train_seasons``, score on ``test_seasons``.
+
+    Returns a dict with the fitted ``model``, the test-set ``predictions`` and
+    the ``metrics``. The test seasons are never touched during fitting.
+    """
+    model = model or PlackettLuceModel()
+    seasons = sorted(df["season"].unique())
+    if train_seasons is None or test_seasons is None:
+        *train_default, test_default = seasons
+        train_seasons = train_seasons or train_default
+        test_seasons = test_seasons or [test_default]
+
+    train_set, test_set = set(train_seasons), set(test_seasons)
+    overlap = train_set & test_set
+    if overlap:
+        raise ValueError(f"Train and test seasons overlap: {sorted(overlap)}")
+
+    train_df = df[df["season"].isin(train_set)]
+    test_df = df[df["season"].isin(test_set)]
+    if train_df.empty or test_df.empty:
+        raise ValueError("Train or test split is empty -- check the season lists.")
+
+    model.fit(train_df)
+    predictions = model.predict(test_df)
+    return {
+        "model": model,
+        "predictions": predictions,
+        "metrics": evaluate_season(predictions),
+        "train_seasons": sorted(train_set),
+        "test_seasons": sorted(test_set),
+    }
+
+
+def rolling_origin_cv(
+    df: pd.DataFrame,
+    model_factory: Callable[[], BaseVoteModel] = PlackettLuceModel,
+    min_train_seasons: int = 4,
+    test_seasons: Optional[Sequence[int]] = None,
+    expanding: bool = True,
+) -> pd.DataFrame:
+    """Walk-forward cross-validation, one fold per season.
+
+    Fold 1 trains on the first ``min_train_seasons`` and tests on the next.
+    Fold 2 rolls forward a season, and so on. With ``expanding=True`` the
+    training window grows; with ``False`` it slides at a fixed width.
+
+    This is the cross-validation to trust for this problem -- it never lets the
+    model see the future, which a shuffled K-fold quietly does.
+    """
+    seasons = sorted(int(s) for s in df["season"].unique())
+    if len(seasons) <= min_train_seasons:
+        raise ValueError(
+            f"Need more than {min_train_seasons} seasons to cross-validate; got {len(seasons)}."
+        )
+    candidates = seasons[min_train_seasons:]
+    if test_seasons is not None:
+        candidates = [s for s in candidates if s in set(test_seasons)]
+
+    rows: List[Dict] = []
+    for season in candidates:
+        position = seasons.index(season)
+        train = seasons[:position] if expanding else seasons[position - min_train_seasons:position]
+        result = backtest(df, model_factory(), train_seasons=train, test_seasons=[season])
+        rows.append(
+            {"fold_test_season": season, "n_train_seasons": len(train), **result["metrics"]}
+        )
+    return pd.DataFrame(rows)
+
+
+def leave_one_season_out_cv(
+    df: pd.DataFrame,
+    model_factory: Callable[[], BaseVoteModel] = PlackettLuceModel,
+) -> pd.DataFrame:
+    """Hold out each season in turn, training on all the others.
+
+    More folds than :func:`rolling_origin_cv`, so it is the steadier signal for
+    tuning a hyperparameter like ``alpha``. It does leak the future into the
+    past, though, so never quote it as the model's expected live accuracy --
+    use walk-forward for that.
+    """
+    seasons = sorted(int(s) for s in df["season"].unique())
+    rows: List[Dict] = []
+    for season in seasons:
+        train = [s for s in seasons if s != season]
+        result = backtest(df, model_factory(), train_seasons=train, test_seasons=[season])
+        rows.append({"fold_test_season": season, **result["metrics"]})
+    return pd.DataFrame(rows)
+
+
+def summarise_cv(folds: pd.DataFrame) -> pd.Series:
+    """Average the numeric columns of a CV table into one row."""
+    numeric = folds.select_dtypes(include=[np.number]).drop(columns=["fold_test_season"],
+                                                            errors="ignore")
+    return numeric.mean()

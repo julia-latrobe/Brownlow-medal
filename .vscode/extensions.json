@@ -1,0 +1,12 @@
+{
+  // VS Code offers to install these the first time the folder is opened.
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "charliermarsh.ruff",
+    "GitHub.vscode-pull-request-github",
+    "eamodio.gitlens",
+    "ms-toolsai.jupyter",
+    "mechatroner.rainbow-csv"
+  ]
+}

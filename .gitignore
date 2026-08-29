@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.eggs/
+
+# Testing / tooling
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+
+# Data: raw downloads and generated outputs are not source, so they stay out of git.
+data/raw/*
+!data/raw/.gitkeep
+data/output/*
+!data/output/.gitkeep
+*.rda
+*.rds
+
+# Editors / OS
+# The shared VS Code project settings ARE committed -- they configure the
+# interpreter, test discovery and debug launchers for everyone. Only personal
+# overrides are ignored.
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+.idea/
+.DS_Store

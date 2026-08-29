@@ -1,0 +1,56 @@
+{
+  // Press F5 to run one of these with the debugger attached, so you can set
+  // breakpoints anywhere in the model code.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Fetch the data",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "brownlow.cli",
+      "args": ["fetch"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Backtest (train 2015-2023, test 2024-2025)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "brownlow.cli",
+      "args": ["backtest", "--train", "2015-2023", "--test", "2024-2025", "--compare"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Predict the current season",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "brownlow.cli",
+      "args": ["predict", "--seasons", "2015-2026", "--train", "2015-2025",
+               "--test", "2025", "--predict", "2026"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Cross-validate",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "brownlow.cli",
+      "args": ["cv", "--seasons", "2015-2025", "--min-train", "5"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Run the current experiment file",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "brownlow.cli",
+      "args": ["run", "${file}", "--seasons", "2015-2026"],
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Debug the current test file",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["${file}", "-v"],
+      "console": "integratedTerminal"
+    }
+  ]
+}
