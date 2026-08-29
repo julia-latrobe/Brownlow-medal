@@ -267,7 +267,7 @@ brownlow compare
 
 ### The scenarios
 
-Eleven are shipped. Each is one hypothesis about what earns votes, and each is a
+Twelve are shipped. Each is one hypothesis about what earns votes, and each is a
 file you can copy and change.
 
 | Scenario | The idea |
@@ -283,6 +283,7 @@ file you can copy and change.
 | `position` | Adds where each player plays, derived from their statistical profile, and its interactions with the key stats. |
 | `ensemble` | Pools the rank model with a gradient-boosted ranker. Needs the optional `boost` extra. |
 | `player-adjusted` | Gives each player a standing adjustment for how the umpires have actually treated him. See below. |
+| `umpire-overlay` | The same projections, but the range shows how far each player moves if that standing view holds or vanishes. |
 
 #### The player-adjusted scenario
 
@@ -420,9 +421,44 @@ the ranges are and how confident the probabilities. Set
 `"simulation_temperature": 1.0` and `"player_shock": 0.0` in a config to see the
 uncorrected version.
 
-One consequence worth knowing: `mean_votes` in `leaderboard.csv` is the mean of
-the *widened* simulation and no longer equals `expected_votes`. Widening pulls
-the leaders back towards the field. `expected_votes` remains the projection.
+Widening is not free, and getting it wrong is easy to miss. Softening the
+probabilities takes the best player's share of the three votes in each match,
+and since a match always awards six, that share moves to the field — so every
+leading player drifts *down*, by five votes for a runaway favourite. The spread
+comes out right and the position wrong, which reads as a long tail below every
+leading player and almost none above. Each player's range is therefore slid back
+onto his projection with its shape untouched (`recentre`, on by default). Of the
+real totals landing inside the 80% range across six held-out seasons, 59% sat
+above the middle before that fix and the simulated mean was out by 1.9 votes on
+a top-40 player; afterwards it is out by 0.8, the same as the projection it now
+sits on.
+
+### The umpire overlay
+
+Everywhere above, the range answers: *how might the votes fall, if we have the
+players right?* The `umpire-overlay` scenario answers a different one: *what if
+we have the **umpires** right or wrong?*
+
+Its low end is where a player lands on his statistics alone. Its high end is
+where he lands if the umpires keep treating him exactly as they have for years.
+It is one-sided by nature — a player carrying a standing credit has room above
+him and very little below:
+
+| Player | On statistics | With the umpires' standing view | Movement |
+| --- | --- | --- | --- |
+| Patrick Cripps | 20.8 | 27.2 | **+6.4** |
+| Jai Newcombe | 17.2 | 22.7 | **+5.5** |
+| Max Gawn | 17.0 | 22.4 | **+5.4** |
+| Jason Horne-Francis | 15.4 | 19.6 | +4.2 |
+| Marcus Bontempelli | 24.2 | 26.3 | +2.1 |
+| Nick Daicos | 42.6 | 44.1 | +1.4 |
+| Will Ashcroft | 23.1 | 23.3 | +0.2 |
+| Izak Rankine | 20.1 | 19.8 | −0.3 |
+
+Both ends are complete projections — each totals six votes a match — so neither
+is a fudge applied to the other. The scenario projects exactly what
+`player-adjusted` projects and ranks identically; only the range differs, so the
+two can be read side by side.
 
 | `metrics.json` | Holdout accuracy plus the exact config used — self-describing. |
 | `coefficients.csv` | What the model learned, largest effect first. |

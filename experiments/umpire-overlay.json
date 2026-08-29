@@ -1,0 +1,25 @@
+{
+  "name": "umpire-overlay",
+  "model": "player_adjusted",
+  "alpha": 1.0,
+  "train_seasons": "2015-2024",
+  "test_seasons": "2025",
+  "predict_seasons": "2026",
+  "n_simulations": 10000,
+  "seed": 0,
+  "ineligible": [],
+  "annotations": {},
+  "compare_baseline": true,
+  "cross_validate": true,
+  "cv_min_train_seasons": 7,
+  "features": {
+    "include_interactions": true,
+    "include_match_best": true
+  },
+  "model_options": {
+    "strength": 0.5,
+    "prior_seasons": 2.0
+  },
+  "interval": "umpire_bias",
+  "notes": "The same projections as player-adjusted, but the range answers a different question. Everywhere else the range asks how the votes might fall if the read on the players is right. Here it asks what happens if the read on the UMPIRES is wrong: the low end is where a player lands on his statistics alone, the high end where he lands if the umpires keep treating him exactly as they have for years. It is one-sided by nature -- a player carrying a standing credit has room above him and little below. For 2026 this is the live question, because umpires now see the statistics before voting and no season the adjustment was measured on worked that way. Patrick Cripps spans 20.8 to 27.2 votes, Jai Newcombe 17.2 to 22.7 and Max Gawn 17.0 to 22.4, while Will Ashcroft moves 0.2 and Izak Rankine slightly the other way."
+}

@@ -124,6 +124,15 @@ class ExperimentConfig:
     #: behaviour.
     simulation_temperature: float = DEFAULT_TEMPERATURE
     player_shock: float = DEFAULT_PLAYER_SHOCK
+    #: What the published range should mean.
+    #:
+    #: ``"simulation"`` is the usual one: how the votes might fall if the read
+    #: on the players is right. ``"umpire_bias"`` answers a different question
+    #: -- where a player lands if the umpires' standing view of him holds, and
+    #: where he lands if it has gone. That range is one-sided by nature and
+    #: needs the ``player_adjusted`` model, which is the only one that measures
+    #: the view in the first place.
+    interval: str = "simulation"
     notes: str = ""
 
     def build_model(self):
@@ -281,6 +290,26 @@ def run_experiment(
             )
             leaderboard["rank"] = np.arange(1, len(leaderboard) + 1)
             results["simulation"] = simulated
+
+        if config.interval == "umpire_bias":
+            if not hasattr(model, "bias_band"):
+                raise ValueError(
+                    "interval 'umpire_bias' needs a model that measures the "
+                    f"umpires' standing view of each player; {config.model!r} "
+                    "does not. Use model 'player_adjusted'."
+                )
+            band = model.bias_band(future)
+            keys = [c for c in ("season", "player", "team")
+                    if c in leaderboard.columns and c in band.columns]
+            leaderboard = leaderboard.drop(
+                columns=[c for c in band.columns if c not in keys], errors="ignore"
+            ).merge(band, on=keys, how="left")
+            # The published range becomes the bias range, so the page and the
+            # charts show it without needing to know the difference.
+            leaderboard["p10_votes"] = leaderboard["bias_low"]
+            leaderboard["p90_votes"] = leaderboard["bias_high"]
+            results["bias_band"] = band
+
         results["leaderboard"] = leaderboard.reset_index(drop=True)
 
     if output_dir is not False:
