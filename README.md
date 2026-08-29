@@ -267,7 +267,7 @@ brownlow compare
 
 ### The scenarios
 
-Eight are shipped. Each is one hypothesis about what earns votes, and each is a
+Eleven are shipped. Each is one hypothesis about what earns votes, and each is a
 file you can copy and change.
 
 | Scenario | The idea |
@@ -280,6 +280,36 @@ file you can copy and change.
 | `midfield-focus` | Ball-winning and midfield work only — blind to goals, marking and ruck work. |
 | `counting-stats-only` | Raw counting stats, no within-match comparisons. An ablation. |
 | `logistic-baseline` | The simpler score-then-rank approach. |
+| `position` | Adds where each player plays, derived from their statistical profile, and its interactions with the key stats. |
+| `ensemble` | Pools the rank model with a gradient-boosted ranker. Needs the optional `boost` extra. |
+| `player-adjusted` | Gives each player a standing adjustment for how the umpires have actually treated him. See below. |
+
+#### The player-adjusted scenario
+
+Two players can produce the same line in the stats and poll very differently.
+Some are consistently rewarded beyond what their numbers earn; others are
+consistently marked down. Across 244 held-out player-seasons, how far a player's
+total sat from his prediction one season correlates **+0.32** with his next
+(p < 0.00001), so this is a trait rather than noise.
+
+`player-adjusted` fits the ordinary rank model, measures that standing gap for
+every player, and carries part of it forward — half by default, discounted
+further for players seen in only a season or two. On walk-forward seasons it cuts
+the error on a top-40 player's season total by about a tenth of a vote, with the
+gain concentrated in the most recent seasons, and leaves per-match accuracy
+unchanged. `strength: 0.0` in `model_options` turns it off exactly.
+
+What separates the two groups is not position, team success or volume — those
+explain under 4% of it. It is where the ball is won. Players rewarded beyond
+their numbers do more of their work in contest, at clearances and driving the
+ball inside 50; they also give away more free kicks and register more clangers,
+which is the tell, since neither is good football. Both mean being in front of
+the umpire at close range. The players marked down accumulate in space:
+uncontested possessions and marks, away from the whistle.
+
+The scenario assumes umpires who voted one way before will vote the same way
+again. Where the voting process itself changes, that assumption is weaker than
+the backtest suggests, and `rank-model` is the more conservative choice.
 
 ### What they actually showed
 
@@ -288,10 +318,13 @@ Six-fold walk-forward cross-validation, test seasons 2020–2025:
 | Scenario | Features | Top-1 | Top-3 recall | Log-lik / match |
 | --- | --- | --- | --- | --- |
 | `interactions` | 67 | 0.5714 | **0.6544** | −5.397 |
-| `everything` | 78 | 0.5620 | 0.6534 | **−5.369** |
+| `ensemble` | 90 | **0.5744** | 0.6534 | **−5.302** |
+| `everything` | 78 | 0.5620 | 0.6534 | −5.369 |
+| `player-adjusted` | 67 | 0.5730 | 0.6526 | −5.347 |
+| `position` | 101 | 0.5691 | 0.6522 | −5.355 |
 | `past-polling` | 59 | 0.5682 | 0.6505 | −5.423 |
 | `recent-form` | 58 | 0.5712 | 0.6500 | −5.375 |
-| `rank-model` | 53 | **0.5726** | 0.6489 | −5.417 |
+| `rank-model` | 53 | 0.5726 | 0.6489 | −5.417 |
 | `logistic-baseline` | 53 | 0.5610 | 0.6423 | −5.789 |
 | `counting-stats-only` | 30 | 0.5565 | 0.6394 | −5.513 |
 | `midfield-focus` | 34 | 0.5560 | 0.6375 | −5.523 |
@@ -321,6 +354,20 @@ are different things, and this is a clean example of the gap.
 `midfield-focus` scoring below `counting-stats-only` is the other useful result:
 throwing away goals and marking costs more than the midfield emphasis wins back,
 so the Brownlow is not purely a midfielder's award.
+
+The same caution applies to the three later scenarios. `ensemble`, `position` and
+`player-adjusted` all sit within about two tenths of a percentage point of
+`interactions` on top-3 recall, which is inside the noise across six folds — none
+of them is separated from it on that measure. Where they do earn their place is
+elsewhere: `ensemble` and `player-adjusted` on log-likelihood, which reads how
+well the whole spread of probabilities fits rather than only whether the top
+three were named; `position` on naming a club's leading vote-getter; and
+`player-adjusted` on how close a season total lands, where it is about a tenth of
+a vote better per top-40 player.
+
+That split is worth noticing on its own. Picking the right three players in a
+match and estimating how many votes a player finishes with are different jobs,
+and a scenario can be better at one while indistinguishable at the other.
 
 ### Ranking scenarios honestly
 

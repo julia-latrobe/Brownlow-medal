@@ -1,0 +1,24 @@
+{
+  "name": "player-adjusted",
+  "model": "player_adjusted",
+  "alpha": 1.0,
+  "train_seasons": "2015-2024",
+  "test_seasons": "2025",
+  "predict_seasons": "2026",
+  "n_simulations": 10000,
+  "seed": 0,
+  "ineligible": [],
+  "annotations": {},
+  "compare_baseline": true,
+  "cross_validate": true,
+  "cv_min_train_seasons": 7,
+  "features": {
+    "include_interactions": true,
+    "include_match_best": true
+  },
+  "model_options": {
+    "strength": 0.5,
+    "prior_seasons": 2.0
+  },
+  "notes": "Gives each player a standing adjustment for how the umpires have actually treated him, on top of the rank model. Some players poll consistently above what their statistics earn and others consistently below: across 244 held-out player-seasons, a player's miss one season correlates +0.32 with his next (p < 0.00001). Half the measured adjustment is carried forward, discounted further for players seen in only a season or two. On walk-forward seasons it cuts the error on a top-40 player's season total by about a tenth of a vote, with the gain concentrated in the most recent seasons, and leaves per-match accuracy unchanged. It assumes the umpires who voted one way before will vote the same way again, so it is the less conservative choice wherever the way votes are cast has changed."
+}

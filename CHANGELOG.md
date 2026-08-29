@@ -8,6 +8,19 @@ Notable changes to this project. Format follows
 
 ### Added
 
+- **A `player-adjusted` scenario**, giving each player a standing adjustment for
+  how the umpires have actually treated him rather than how his statistics read.
+  A player's gap between actual and predicted votes one season correlates +0.32
+  with the next across 244 held-out player-seasons, so the effect is a trait, not
+  noise. Half the measured adjustment carries forward by default, discounted
+  again for players seen in only a season or two; `strength: 0.0` reproduces the
+  plain rank model exactly. Cuts the error on a top-40 player's season total by
+  about a tenth of a vote on walk-forward seasons, most of it in the recent ones,
+  and leaves per-match accuracy unchanged. Learns from completed seasons only.
+- **`model_options` in an experiment config**, passing settings straight through
+  to the model for knobs that belong to one model rather than all of them.
+  Options the chosen model does not accept raise rather than silently doing
+  nothing.
 - **Five new model scenarios**, each testing one hypothesis about what earns
   votes: `past-polling` (previous seasons' votes), `recent-form` (a lagged
   rolling rating), `interactions` (products of paired features and match-best
