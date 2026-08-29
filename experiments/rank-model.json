@@ -8,6 +8,7 @@
   "n_simulations": 10000,
   "seed": 0,
   "ineligible": [],
+  "annotations": {},
   "compare_baseline": true,
   "features": {},
   "notes": "Default rank model over the full feature set."

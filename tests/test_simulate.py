@@ -66,3 +66,30 @@ class TestSimulateSeason:
     def test_rejects_predictions_without_probabilities(self, small_season):
         with pytest.raises(ValueError, match="missing columns"):
             simulate_season(small_season)
+
+    def test_players_sharing_a_name_are_kept_apart(self, small_season):
+        """The AFL has had two Bailey Williamses at once, at different clubs.
+
+        Keying on the name alone would pool their votes, inflating one total and
+        giving both the same wrong win probability.
+        """
+        model = PlackettLuceModel().fit(small_season)
+        predictions = model.predict(small_season)
+
+        # Rename two players at different clubs to share a name.
+        teams = predictions["team"].unique()[:2]
+        renamed = predictions.copy()
+        for team in teams:
+            on_team = renamed["team"] == team
+            victim = renamed.loc[on_team, "player"].iloc[0]
+            renamed.loc[renamed["player"] == victim, "player"] = "Shared Name"
+
+        summary = simulate_season(renamed, n_simulations=500, seed=3)
+        rows = summary[summary["player"] == "Shared Name"]
+        assert len(rows) == 2, "the two players should stay separate"
+        assert set(rows["team"]) == set(teams)
+
+        # Their combined total should still equal what the model expects of them.
+        expected = renamed[renamed["player"] == "Shared Name"]["predicted_votes"].sum()
+        assert rows["mean_votes"].sum() == pytest.approx(expected, abs=0.6)
+        assert summary["win_probability"].sum() == pytest.approx(1.0)

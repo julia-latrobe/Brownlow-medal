@@ -256,9 +256,38 @@ leak into the past — never quote it as expected accuracy.
 
 `brownlow report` reads every run in `data/output/` and writes a single
 self-contained `docs/index.html` — no build step, no JavaScript dependencies, no
-CDN. It has a dropdown to switch between runs, a team filter that ranks one club's
-players, projected totals by team, the fitted coefficients, and the holdout
-comparison.
+CDN.
+
+It has four linked views, so you can start anywhere and click through:
+
+| View | What it shows |
+| --- | --- |
+| **Season** | The projected leaderboard, win probabilities, votes by team, the fitted coefficients, and the holdout comparison. |
+| **Player** | One player's season match by match: expected votes per round, the chance of taking 3, 2 and 1 votes in each game, their likely range and their best projected game. |
+| **Round** | Every match in a round, in the order it was played, with the projected 3-2-1 and the runners-up. |
+| **Team** | A club's whole squad ranked, its fixtures, and the player most likely to poll in each one. |
+
+Every name is a link — players, teams and round numbers all navigate — and each
+view links back to the season page, as does the title in the header. Views are
+addressed by URL fragment (`#player=Nick Daicos|Collingwood`, `#round=12`,
+`#team=Geelong`), so any page can be linked to or shared directly.
+
+There is also a run selector, a team filter, and a type-to-search box for
+players. Choosing a team narrows the search box to that club's players.
+
+### Labelling a player
+
+`annotations` in an experiment config puts a short label beside a player's name
+wherever it appears — useful for marking someone as unavailable:
+
+```json
+"annotations": { "Some Player": "Omitted" }
+```
+
+Annotations are presentational only. They never reach the model, the projection
+or the simulation, so adding one cannot change a number on the page. To actually
+exclude a player from *winning* the medal while still having them poll votes —
+what a suspension does — use `ineligible` instead.
 
 The page is committed to the repository, so the numbers always correspond to a
 specific commit. Merging a change to `docs/` on `main` triggers the **Publish

@@ -8,6 +8,7 @@
   "n_simulations": 10000,
   "seed": 0,
   "ineligible": [],
+  "annotations": {},
   "compare_baseline": true,
   "features": {},
   "notes": "Weighted logistic regression, ranked to 3-2-1. Simpler comparison point."

@@ -6,6 +6,33 @@ Notable changes to this project. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Player pages** on the results site: a player's season match by match, with
+  expected votes per round, the chance of taking 3, 2 and 1 votes in each game,
+  their likely range, season rank and best projected game.
+- **Round pages**: every match in a round, ordered by the actual date and start
+  time it was played, with the projected 3-2-1 and the runners-up.
+- **Team pages**: a club's squad ranked by projected votes, its fixtures, and the
+  player most likely to poll in each one.
+- **Navigation throughout**: every player, team and round name is a link; each
+  view links back to the season page and the header title is a home link. Views
+  are addressed by URL fragment, so any page can be linked to directly.
+- **Player search** with a type-to-filter box that narrows to the selected team.
+- **`annotations`** in an experiment config, for a short label beside a player's
+  name (e.g. `"Omitted"`). Presentational only — never an input to the model.
+- Match date, local start time and venue are now carried through the pipeline
+  and written to `predictions.csv`, so matches can be shown in playing order.
+
+### Fixed
+
+- **Two players who share a name are no longer treated as one person.** The
+  simulation keyed on the player's name alone, so the two Bailey Williamses (West
+  Coast and Western Bulldogs) had their votes pooled, which inflated the combined
+  total and gave both the same wrong win probability. Identity is now the name
+  *and* the club, everywhere. `season_totals` was already correct; the simulation
+  and the leaderboard join were not.
+
 ## [0.1.0] - 2026-08-29
 
 First working version.

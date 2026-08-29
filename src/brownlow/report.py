@@ -76,6 +76,18 @@ def collect_run(run_dir: Path) -> Optional[Dict[str, Any]]:
         for row in board[columns].to_dict(orient="records")
     ]
 
+    # Per-match rows power the individual player pages. They are the biggest
+    # thing on the page by far -- roughly 9,500 rows a season -- so they are
+    # stored as parallel arrays of numbers rather than repeating a key name on
+    # every row. That keeps a full season under a few hundred KB.
+    games: List[List[List[Any]]] = []
+    opponents: List[str] = []
+    rounds: List[Dict[str, Any]] = []
+    predictions_file = run_dir / "predictions.csv"
+    if predictions_file.exists():
+        games, opponents = _collect_games(predictions_file, board)
+        rounds = _collect_rounds(predictions_file)
+
     coefficients: List[Dict[str, Any]] = []
     coefficient_file = run_dir / "coefficients.csv"
     if coefficient_file.exists():
@@ -105,7 +117,147 @@ def collect_run(run_dir: Path) -> Optional[Dict[str, Any]]:
         "comparison": metrics.get("comparison") or {},
         "coefficients": coefficients,
         "players": players,
+        "games": games,
+        "opponents": opponents,
+        "rounds": rounds,
+        # Presentational labels beside a player's name. They never touch the model.
+        "annotations": config.get("annotations") or {},
     }
+
+
+def _round_number(value: Any) -> Any:
+    """Round labels are mostly numeric, but finals use codes like 'GF'."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _collect_games(predictions_file: Path, board: pd.DataFrame):
+    """Build each player's round-by-round projection, in the leaderboard's order.
+
+    Returns a list parallel to ``board``'s rows, each holding that player's
+    matches as ``[round, opponent index, is home, expected votes, p3, p2, p1,
+    actual votes]``. Players are identified by name *and* club, because two
+    players can share a name.
+    """
+    frame = pd.read_csv(predictions_file)
+    if "player" not in frame.columns:
+        return [], []
+
+    opponent_names = sorted(frame["opponent"].dropna().astype(str).unique()) \
+        if "opponent" in frame.columns else []
+    opponent_index = {name: i for i, name in enumerate(opponent_names)}
+
+    has_team = "team" in frame.columns and "team" in board.columns
+    keys = frame["player"].astype(str)
+    if has_team:
+        keys = keys + "|" + frame["team"].astype(str)
+    frame = frame.assign(_key=keys)
+
+    sort_columns = [c for c in ("round", "match_id") if c in frame.columns]
+    if sort_columns:
+        frame = frame.sort_values(["_key", *sort_columns], key=lambda c: (
+            pd.to_numeric(c, errors="coerce").fillna(1e9) if c.name == "round" else c
+        ))
+
+    def cell(row, column, digits):
+        value = row.get(column)
+        if value is None or (isinstance(value, float) and value != value):
+            return None
+        return round(float(value), digits)
+
+    grouped = {}
+    for key, group in frame.groupby("_key", sort=False):
+        rows = []
+        for record in group.to_dict(orient="records"):
+            rows.append([
+                _round_number(record.get("round")),
+                opponent_index.get(str(record.get("opponent")), -1),
+                1 if record.get("is_home") else 0,
+                cell(record, "predicted_votes", 4),
+                cell(record, "p_3_votes", 4),
+                cell(record, "p_2_votes", 4),
+                cell(record, "p_1_vote", 4),
+                cell(record, "votes", 0),
+            ])
+        grouped[key] = rows
+
+    board_keys = board["player"].astype(str)
+    if has_team:
+        board_keys = board_keys + "|" + board["team"].astype(str)
+    return [grouped.get(key, []) for key in board_keys], opponent_names
+
+
+def _collect_rounds(predictions_file: Path, top_n: int = 5):
+    """Group the projection by round, then by match, in the order they were played.
+
+    For each match we keep the players most likely to poll, so the round view can
+    show a projected 3-2-1 alongside the runners-up.
+    """
+    frame = pd.read_csv(predictions_file)
+    needed = {"round", "match_id", "player", "predicted_votes"}
+    if not needed <= set(frame.columns):
+        return []
+
+    if "date" in frame.columns:
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+    frame["_round_sort"] = pd.to_numeric(frame["round"], errors="coerce").fillna(9999)
+
+    rounds = []
+    for (round_sort, round_label), round_rows in frame.groupby(
+        ["_round_sort", "round"], sort=True
+    ):
+        matches = []
+        for match_id, match_rows in round_rows.groupby("match_id", sort=False):
+            first = match_rows.iloc[0]
+            # A predictions.csv written by an older version may have no
+            # is_home column, in which case fall back to the match_id, which
+            # always reads "<season>-R<round>-<home>-v-<away>".
+            if "is_home" in match_rows.columns:
+                home_flag = match_rows["is_home"] == 1
+                home_team = match_rows.loc[home_flag, "team"]
+                away_team = match_rows.loc[~home_flag, "team"]
+                home_name = str(home_team.iloc[0]) if len(home_team) else ""
+                away_name = str(away_team.iloc[0]) if len(away_team) else ""
+            else:
+                home_name, _, away_name = str(match_id).partition("-v-")
+                home_name = home_name.split("-", 2)[-1]
+            ranked = match_rows.sort_values("predicted_votes", ascending=False).head(top_n)
+
+            date_value = first.get("date")
+            start = first.get("local_start_time")
+            matches.append({
+                "match_id": str(match_id),
+                "home": home_name,
+                "away": away_name,
+                "date": None if pd.isna(date_value) else pd.Timestamp(date_value).strftime("%Y-%m-%d"),
+                "start": None if pd.isna(start) else int(start),
+                "venue": None if pd.isna(first.get("venue")) else str(first.get("venue")),
+                "top": [
+                    {
+                        "player": str(row["player"]),
+                        "team": str(row.get("team", "")),
+                        "expected": round(float(row["predicted_votes"]), 3),
+                        "p3": round(float(row.get("p_3_votes", 0) or 0), 4),
+                        "actual": (
+                            None if pd.isna(row.get("votes")) else int(row.get("votes"))
+                        ),
+                    }
+                    for _, row in ranked.iterrows()
+                ],
+            })
+
+        # Order matches the way the round was actually played.
+        matches.sort(key=lambda m: (m["date"] or "", m["start"] if m["start"] is not None else 0))
+        rounds.append({
+            "round": str(round_label),
+            "sort": float(round_sort),
+            "matches": matches,
+        })
+
+    rounds.sort(key=lambda r: r["sort"])
+    return rounds
 
 
 def collect_runs(output_root: Optional[Path] = None) -> List[Dict[str, Any]]:
@@ -183,7 +335,10 @@ body {{
 .wrap {{ max-width: 960px; margin: 0 auto; padding: 38px 20px 72px; }}
 header {{ border-bottom: 1px solid var(--border); padding-bottom: 20px; }}
 h1 {{ font-size: 30px; margin: 0; letter-spacing: -0.02em; }}
-.brand {{ display: flex; align-items: center; gap: 13px; margin-bottom: 7px; }}
+/* The title doubles as the way home, the way a site logo normally does. */
+.brand {{ display: flex; align-items: center; gap: 13px; margin-bottom: 7px;
+          text-decoration: none; color: inherit; width: fit-content; }}
+.brand:hover h1 {{ color: var(--series-1); }}
 .logo {{ width: 50px; height: 42px; flex: none; }}
 h2 {{ font-size: 19px; margin: 38px 0 4px; letter-spacing: -0.01em; }}
 .sub {{ color: var(--muted); margin: 0; font-size: 14px; }}
@@ -237,6 +392,29 @@ code {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 
   padding: 5px 9px; border-radius: 6px; max-width: 320px; z-index: 10;
 }}
 .empty {{ color: var(--muted); font-size: 13.5px; padding: 10px 4px; }}
+
+/* Player links: readable as text, obviously clickable on hover. */
+.nav-link {{ color: inherit; text-decoration: none; cursor: pointer; border-bottom: 1px solid transparent; }}
+.nav-link:hover {{ color: var(--series-1); border-bottom-color: var(--series-1); }}
+text.nav-link:hover {{ fill: var(--series-1); }}
+input[type="search"], input[type="text"] {{
+  font: inherit; font-size: 14px; padding: 6px 10px; min-width: 220px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 7px;
+}}
+.back-link {{
+  display: inline-flex; align-items: center; gap: 6px; margin: 4px 0 14px;
+  font-size: 14px; color: var(--series-1); text-decoration: none; cursor: pointer;
+}}
+.back-link:hover {{ text-decoration: underline; }}
+.player-header {{ display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 2px; }}
+.player-header h2 {{ margin: 0; font-size: 26px; }}
+.player-team {{ color: var(--muted); font-size: 15px; }}
+.pill {{
+  display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px;
+  background: var(--neutral); color: var(--muted);
+}}
+.hidden {{ display: none; }}
 """
 
 
@@ -270,8 +448,10 @@ function hbar(rows, opts) {
     const bw = Math.max(0, r.value / scale * plotWidth);
     s += `<g class="mark" data-tip="${esc(r.tip)}">`;
     s += `<rect x="0" y="${y - 3}" width="${o.width}" height="${o.rowHeight - 2}" class="row-hit"/>`;
-    s += `<text x="${plotLeft - 10}" y="${y + bh / 2 + (r.sub ? 0 : 4)}" text-anchor="end"
-             class="axis-label">${esc(r.label)}</text>`;
+    const labelText = `<text x="${plotLeft - 10}" y="${y + bh / 2 + (r.sub ? 0 : 4)}"
+             text-anchor="end" class="axis-label${r.href ? ' nav-link' : ''}"
+             >${esc(r.label)}</text>`;
+    s += r.href ? `<a href="${r.href}">${labelText}</a>` : labelText;
     if (r.sub) s += `<text x="${plotLeft - 10}" y="${y + bh / 2 + 12}" text-anchor="end"
              class="axis-sublabel">${esc(r.sub)}</text>`;
     s += `<path d="${barPath(plotLeft, y, bw, bh)}" fill="${o.colour}"/>`;
@@ -379,6 +559,34 @@ function attachTips(root) {
 
 function currentRun() { return RUNS.find(r => r.name === $('run-select').value) || RUNS[0]; }
 
+// Two players can share a name, so identity is always name + club.
+function playerKey(p) { return p.team ? `${p.player}|${p.team}` : p.player; }
+
+// A short label beside a name, e.g. "Omitted". Presentational only -- these
+// never touch the model, the projection or the simulation.
+function annotationFor(run, name) { return (run.annotations || {})[name] || ''; }
+
+function annotationTag(run, name) {
+  const label = annotationFor(run, name);
+  return label ? ` <span class="pill">${esc(label)}</span>` : '';
+}
+
+function playerHref(p) { return '#player=' + encodeURIComponent(playerKey(p)); }
+function teamHref(team) { return '#team=' + encodeURIComponent(team); }
+function roundHref(round) { return '#round=' + encodeURIComponent(round); }
+
+function teamLink(team) {
+  return team ? `<a class="nav-link" href="${teamHref(team)}">${esc(team)}</a>` : '--';
+}
+function roundLink(round) {
+  return `<a class="nav-link" href="${roundHref(round)}">${esc(round)}</a>`;
+}
+
+function playerLink(run, p, text) {
+  return `<a class="nav-link" href="${playerHref(p)}">${esc(text || p.player)}</a>`
+    + annotationTag(run, p.player);
+}
+
 function populateTeams(run) {
   const select = $('team-select');
   const previous = select.value;
@@ -386,6 +594,41 @@ function populateTeams(run) {
   select.innerHTML = '<option value="">All teams</option>' +
     teams.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('');
   if (teams.includes(previous)) select.value = previous;
+}
+
+function populateRounds(run) {
+  const select = $('round-select');
+  const previous = select.value;
+  const rounds = run.rounds || [];
+  select.innerHTML = '<option value="">Whole season</option>' +
+    rounds.map(r => `<option value="${esc(r.round)}">Round ${esc(r.round)}</option>`).join('');
+  if (rounds.some(r => r.round === previous)) select.value = previous;
+}
+
+// The search list follows the team filter, so choosing a club narrows the
+// names you can type -- which is the whole point of having both.
+function populatePlayerSearch(run) {
+  const team = $('team-select').value;
+  const pool = team ? run.players.filter(p => p.team === team) : run.players;
+  $('player-options').innerHTML = [...pool]
+    .sort((a, b) => a.player.localeCompare(b.player))
+    .map(p => {
+      const label = team ? p.player : `${p.player} (${p.team || '--'})`;
+      return `<option value="${esc(label)}"></option>`;
+    }).join('');
+}
+
+// Accepts what the datalist puts in the box, and also a plain typed name.
+function findPlayerByLabel(run, text) {
+  const wanted = (text || '').trim().toLowerCase();
+  if (!wanted) return null;
+  const withTeam = run.players.find(
+    p => `${p.player} (${p.team || '--'})`.toLowerCase() === wanted);
+  if (withTeam) return withTeam;
+  const exact = run.players.filter(p => p.player.toLowerCase() === wanted);
+  if (exact.length) return exact[0];
+  const partial = run.players.filter(p => p.player.toLowerCase().includes(wanted));
+  return partial.length === 1 ? partial[0] : null;
 }
 
 function render() {
@@ -428,6 +671,7 @@ function render() {
     : `Projected leaderboard, ${run.season_label}`;
   $('leaderboard').innerHTML = hbar(ranked.slice(0, 20).map(p => ({
     label: p.player, sub: team ? null : p.team, value: p.predicted_votes,
+    href: playerHref(p),
     low: p.p10_votes, high: p.p90_votes,
     tip: `${p.player} (${p.team || '--'}): ${fmt(p.predicted_votes)} expected votes` +
          (p.p10_votes !== null && p.p10_votes !== undefined
@@ -445,6 +689,7 @@ function render() {
       winSection.style.display = '';
       $('win-chart').innerHTML = hbar(contenders.map(p => ({
         label: p.player, sub: team ? null : p.team, value: p.win_probability * 100,
+        href: playerHref(p),
         tip: `${p.player}: ${(p.win_probability * 100).toFixed(1)}% chance of winning the medal`
       })), { suffix: '%', decimals: 1 });
     } else {
@@ -490,7 +735,7 @@ function render() {
   }
 
   $('coefficients').innerHTML = diverging(run.coefficients || []);
-  $('player-table').innerHTML = playerTable(ranked, hasWin);
+  $('player-table').innerHTML = playerTable(run, ranked, hasWin);
   attachTips(document);
 }
 
@@ -509,10 +754,10 @@ function teamTable(run, totals) {
   const rows = Object.entries(totals).sort((a, b) => b[1] - a[1]).map(([team, value], i) => {
     const best = run.players.filter(p => p.team === team)
       .sort((a, b) => b.predicted_votes - a.predicted_votes)[0];
-    return `<tr><td class="num">${i + 1}</td><td>${esc(team)}</td>
+    return `<tr><td class="num">${i + 1}</td><td>${teamLink(team)}</td>
       <td class="num">${fmt(value)}</td>
       ${hasActual ? `<td class="num">${fmt(actual[team] || 0)}</td>` : ''}
-      <td>${esc(best ? best.player : '--')}</td>
+      <td>${best ? playerLink(run, best) : '--'}</td>
       <td class="num">${fmt(best ? best.predicted_votes : 0)}</td>
       <td class="num">${counts[team] || 0}</td></tr>`;
   }).join('');
@@ -522,10 +767,10 @@ function teamTable(run, totals) {
     </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
-function playerTable(ranked, hasWin) {
+function playerTable(run, ranked, hasWin) {
   const hasActual = ranked.some(p => p.actual_votes !== null && p.actual_votes !== undefined);
   const rows = ranked.slice(0, 60).map((p, i) => `<tr>
-    <td class="num">${i + 1}</td><td>${esc(p.player)}</td><td>${esc(p.team || '--')}</td>
+    <td class="num">${i + 1}</td><td>${playerLink(run, p)}</td><td>${esc(p.team || '--')}</td>
     <td class="num">${fmt(p.predicted_votes)}</td>
     <td class="num">${p.games === undefined || p.games === null ? '--' : p.games}</td>
     ${hasWin ? `<td class="num">${p.win_probability === null || p.win_probability === undefined
@@ -540,10 +785,375 @@ function playerTable(ranked, hasWin) {
     </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
-$('run-select').addEventListener('change', () => { populateTeams(currentRun()); render(); });
-$('team-select').addEventListener('change', render);
+/* ---------------- Individual player pages ---------------- */
+
+function startTimeLabel(start) {
+  if (start === null || start === undefined) return '';
+  const hours = Math.floor(start / 100), minutes = start % 100;
+  const suffix = hours >= 12 ? 'pm' : 'am';
+  const hour12 = ((hours + 11) % 12) + 1;
+  return `${hour12}:${String(minutes).padStart(2, '0')}${suffix}`;
+}
+
+// Expected votes round by round, with the actual result beside it when the
+// season has been counted. Both are votes on the same scale, so they share one
+// axis rather than being forced onto two.
+function roundBars(games, opponents, showActual) {
+  if (!games.length) return "<p class='empty'>No matches recorded for this player.</p>";
+  const width = 720, height = 240, left = 40, bottom = 46, top = 16;
+  const plotW = width - left - 14, plotH = height - bottom - top;
+  const maxValue = Math.max(3, ...games.map(g => Math.max(g[3] || 0, showActual ? (g[7] || 0) : 0)));
+  const scale = maxValue * 1.1;
+  const slot = plotW / games.length;
+  const series = showActual ? 2 : 1;
+  const barW = Math.max(3, Math.min(22, (slot - 6) / series));
+
+  let s = `<svg viewBox="0 0 ${width} ${height}" class="chart" role="img"
+             preserveAspectRatio="xMinYMin meet">`;
+  [0, 1, 2, 3].filter(v => v <= scale).forEach(v => {
+    const y = top + plotH * (1 - v / scale);
+    s += `<line x1="${left}" y1="${y}" x2="${width - 14}" y2="${y}" class="grid"/>`;
+    s += `<text x="${left - 7}" y="${y + 4}" text-anchor="end" class="axis-sublabel">${v}</text>`;
+  });
+  games.forEach((g, i) => {
+    const centre = left + slot * (i + 0.5);
+    const offset = centre - (barW * series) / 2;
+    const opponent = opponents[g[1]] || 'unknown';
+    const venue = g[2] ? 'vs' : 'at';
+    const values = showActual ? [g[3] || 0, g[7] || 0] : [g[3] || 0];
+    const colours = ['var(--series-1)', 'var(--series-2)'];
+    values.forEach((v, k) => {
+      const bh = (v / scale) * plotH;
+      const x = offset + k * barW, y = top + plotH - bh;
+      const what = k === 0 ? 'projected' : 'actual';
+      s += `<g class="mark" data-tip="Round ${g[0]} ${venue} ${opponent}: ${v.toFixed(2)} ${what} votes">`;
+      s += `<path d="${barPath(x + 1, y, barW - 2, bh)}" fill="${colours[k]}"/></g>`;
+    });
+    if (games.length <= 26) {
+      s += `<text x="${centre}" y="${height - 28}" text-anchor="middle"
+              class="axis-sublabel">${esc(g[0])}</text>`;
+    }
+  });
+  s += `<text x="${left + plotW / 2}" y="${height - 8}" text-anchor="middle"
+          class="axis-sublabel">Round</text></svg>`;
+  const legend = showActual
+    ? `<div class="legend"><span class="legend-item"><span class="swatch"
+         style="background:var(--series-1)"></span>Projected</span>
+       <span class="legend-item"><span class="swatch"
+         style="background:var(--series-2)"></span>Actual</span></div>`
+    : '';
+  return legend + s;
+}
+
+function renderPlayer(key) {
+  const run = currentRun();
+  const position = run.players.findIndex(p => playerKey(p) === key);
+  const view = $('player-view');
+  if (position < 0) {
+    view.innerHTML = `<a class="back-link" href="#">&larr; Back to the season</a>
+      <p class="empty">No player matching that link in this run.</p>`;
+    return null;
+  }
+  const p = run.players[position];
+  const games = (run.games || [])[position] || [];
+  const showActual = games.some(g => g[7] !== null && g[7] !== undefined);
+  const ranked = [...run.players].sort((a, b) => b.predicted_votes - a.predicted_votes);
+  const rank = ranked.findIndex(x => playerKey(x) === key) + 1;
+  const best = games.length
+    ? games.reduce((a, b) => ((b[3] || 0) > (a[3] || 0) ? b : a)) : null;
+  const opponents = run.opponents || [];
+
+  let tiles = tile('Projected votes', fmt(p.predicted_votes), `${p.games || games.length} games`);
+  if (p.win_probability !== null && p.win_probability !== undefined) {
+    tiles += tile('Chance of winning', (p.win_probability * 100).toFixed(1) + '%',
+                  'across simulated seasons');
+  }
+  if (p.p10_votes !== null && p.p10_votes !== undefined) {
+    tiles += tile('Likely range', `${fmt(p.p10_votes, 0)}–${fmt(p.p90_votes, 0)}`,
+                  '10th to 90th percentile');
+  }
+  tiles += tile('Season rank', '#' + rank, 'by projected votes');
+  if (best) {
+    tiles += tile('Best game', `Round ${best[0]}`,
+                  `${best[2] ? 'vs' : 'at'} ${opponents[best[1]] || '--'} · ` +
+                  `${fmt(best[3], 2)} votes`);
+  }
+  if (p.actual_votes !== null && p.actual_votes !== undefined) {
+    tiles += tile('Actual votes', fmt(p.actual_votes, 0), 'what they really polled');
+  }
+
+  const rows = games.map(g => `<tr>
+    <td class="num">${roundLink(g[0])}</td>
+    <td>${g[2] ? 'vs' : 'at'} ${teamLink(opponents[g[1]])}</td>
+    <td>${g[2] ? 'Home' : 'Away'}</td>
+    <td class="num">${((g[4] || 0) * 100).toFixed(1)}%</td>
+    <td class="num">${((g[5] || 0) * 100).toFixed(1)}%</td>
+    <td class="num">${((g[6] || 0) * 100).toFixed(1)}%</td>
+    <td class="num">${fmt(g[3], 2)}</td>
+    ${showActual ? `<td class="num">${g[7] === null || g[7] === undefined ? '--' : g[7]}</td>` : ''}
+  </tr>`).join('');
+
+  view.innerHTML = `
+    <a class="back-link" href="#">&larr; Back to the season</a>
+    <div class="player-header">
+      <h2>${esc(p.player)}</h2>
+      <span class="player-team">${teamLink(p.team)}</span>
+      ${annotationFor(run, p.player) ? `<span class="pill">${esc(annotationFor(run, p.player))}</span>` : ''}
+    </div>
+    <p class="note">Projected votes for ${esc(run.season_label)}, match by match.</p>
+    <div class="tiles">${tiles}</div>
+    <h2>Round by round</h2>
+    <p class="note">How many votes this player is projected to poll in each match.
+       Three is the most any single game can award.</p>
+    <div class="panel">${roundBars(games, opponents, showActual)}</div>
+    <h2>Every match</h2>
+    <p class="note">The chance of taking 3, 2 and 1 votes in each game, and the
+       expected votes those add up to.</p>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Round</th><th>Opponent</th><th>H/A</th>
+      <th>P(3)</th><th>P(2)</th><th>P(1)</th><th>Expected</th>
+      ${showActual ? '<th>Actual</th>' : ''}
+    </tr></thead><tbody>${rows}</tbody></table></div>
+    <p><a class="back-link" href="#">&larr; Back to the season</a></p>`;
+  attachTips(view);
+  return p;
+}
+
+/* ---------------- Round pages ---------------- */
+
+function renderRound(roundLabel) {
+  const run = currentRun();
+  const view = $('round-view');
+  const round = (run.rounds || []).find(r => r.round === roundLabel);
+  if (!round) {
+    view.innerHTML = `<a class="back-link" href="#">&larr; Back to the season</a>
+      <p class="empty">No matches recorded for that round in this run.</p>`;
+    return;
+  }
+  const byKey = {};
+  run.players.forEach(p => { byKey[playerKey(p)] = p; });
+  const voteLabels = ['3 votes', '2 votes', '1 vote'];
+
+  const cards = round.matches.map(match => {
+    const when = [match.date, startTimeLabel(match.start)].filter(Boolean).join(' · ');
+    const rows = match.top.map((entry, i) => {
+      const linked = byKey[`${entry.player}|${entry.team}`];
+      const name = linked ? playerLink(run, linked) : esc(entry.player) + annotationTag(run, entry.player);
+      const predicted = i < 3
+        ? `<span class="pill">${voteLabels[i]}</span>`
+        : '<span class="axis-sublabel">next best</span>';
+      return `<tr>
+        <td>${predicted}</td>
+        <td>${name}</td>
+        <td>${teamLink(entry.team)}</td>
+        <td class="num">${fmt(entry.expected, 2)}</td>
+        <td class="num">${(entry.p3 * 100).toFixed(1)}%</td>
+        ${entry.actual === null || entry.actual === undefined
+          ? '' : `<td class="num">${entry.actual}</td>`}
+      </tr>`;
+    }).join('');
+    const hasActual = match.top.some(e => e.actual !== null && e.actual !== undefined);
+    return `
+      <h2>${teamLink(match.home)} v ${teamLink(match.away)}</h2>
+      <p class="note">${esc(when)}${match.venue ? ' · ' + esc(match.venue) : ''}</p>
+      <div class="table-wrap"><table><thead><tr>
+        <th>Projected</th><th>Player</th><th>Team</th>
+        <th>Expected votes</th><th>Chance of the 3</th>${hasActual ? '<th>Actual</th>' : ''}
+      </tr></thead><tbody>${rows}</tbody></table></div>`;
+  }).join('');
+
+  view.innerHTML = `
+    <a class="back-link" href="#">&larr; Back to the season</a>
+    <div class="player-header"><h2>Round ${esc(round.round)}</h2></div>
+    <p class="note">Every match in the round, in the order it was played, with the
+       players most likely to poll. The top three are the projected 3-2-1.</p>
+    ${cards}
+    <p><a class="back-link" href="#">&larr; Back to the season</a></p>`;
+  attachTips(view);
+}
+
+/* ---------------- Team pages ---------------- */
+
+function renderTeam(teamName) {
+  const run = currentRun();
+  const view = $('team-view');
+  const squad = run.players
+    .map((p, i) => ({ player: p, games: (run.games || [])[i] || [] }))
+    .filter(entry => entry.player.team === teamName)
+    .sort((a, b) => b.player.predicted_votes - a.player.predicted_votes);
+
+  if (!squad.length) {
+    view.innerHTML = `<a class="back-link" href="#">&larr; Back to the season</a>
+      <p class="empty">No players for that team in this run.</p>`;
+    return;
+  }
+
+  const totals = {};
+  run.players.forEach(p => {
+    if (p.team) totals[p.team] = (totals[p.team] || 0) + p.predicted_votes;
+  });
+  const order = Object.entries(totals).sort((a, b) => b[1] - a[1]);
+  const teamRank = order.findIndex(([name]) => name === teamName) + 1;
+  const opponents = run.opponents || [];
+
+  let tiles = tile('Projected votes', fmt(totals[teamName]), 'across the whole squad');
+  tiles += tile('Competition rank', '#' + teamRank, `of ${order.length} clubs`);
+  tiles += tile('Leading player', squad[0].player.player, fmt(squad[0].player.predicted_votes) + ' votes');
+  tiles += tile('Players used', String(squad.length), 'polled at least a share');
+
+  // The club's fixtures, taken from the round data so they stay in playing order.
+  const fixtures = [];
+  (run.rounds || []).forEach(round => {
+    round.matches.forEach(match => {
+      if (match.home !== teamName && match.away !== teamName) return;
+      const isHome = match.home === teamName;
+      // Who from this club is most likely to poll in this match?
+      let best = null;
+      squad.forEach(entry => {
+        entry.games.forEach(g => {
+          if (String(g[0]) !== String(round.round)) return;
+          if (!best || (g[3] || 0) > (best.expected || 0)) {
+            best = { name: entry.player, expected: g[3] || 0 };
+          }
+        });
+      });
+      fixtures.push({ round: round.round, opponent: isHome ? match.away : match.home,
+                      isHome, date: match.date, start: match.start, best });
+    });
+  });
+
+  const fixtureRows = fixtures.map(f => `<tr>
+    <td class="num">${roundLink(f.round)}</td>
+    <td>${f.isHome ? 'vs' : 'at'} ${teamLink(f.opponent)}</td>
+    <td>${esc([f.date, startTimeLabel(f.start)].filter(Boolean).join(' · '))}</td>
+    <td>${f.best ? playerLink(run, f.best.name) : '--'}</td>
+    <td class="num">${f.best ? fmt(f.best.expected, 2) : '--'}</td>
+  </tr>`).join('');
+
+  const hasWin = squad.some(e => e.player.win_probability !== null
+                                 && e.player.win_probability !== undefined);
+  const squadRows = squad.map((entry, i) => {
+    const p = entry.player;
+    return `<tr>
+      <td class="num">${i + 1}</td>
+      <td>${playerLink(run, p)}</td>
+      <td class="num">${fmt(p.predicted_votes)}</td>
+      <td class="num">${p.games === undefined || p.games === null ? '--' : p.games}</td>
+      ${hasWin ? `<td class="num">${p.win_probability === null || p.win_probability === undefined
+          ? '--' : (p.win_probability * 100).toFixed(1) + '%'}</td>` : ''}
+      ${p.actual_votes === null || p.actual_votes === undefined
+        ? '' : `<td class="num">${fmt(p.actual_votes, 0)}</td>`}
+    </tr>`;
+  }).join('');
+  const hasActual = squad.some(e => e.player.actual_votes !== null
+                                    && e.player.actual_votes !== undefined);
+
+  view.innerHTML = `
+    <a class="back-link" href="#">&larr; Back to the season</a>
+    <div class="player-header"><h2>${esc(teamName)}</h2>
+      <span class="player-team">${esc(run.season_label)}</span></div>
+    <div class="tiles">${tiles}</div>
+
+    <h2>Projected votes by player</h2>
+    <p class="note">Every player at the club who is projected to poll, most votes first.</p>
+    <div class="panel">${hbar(squad.slice(0, 20).map(e => ({
+      label: e.player.player, value: e.player.predicted_votes,
+      href: playerHref(e.player), low: e.player.p10_votes, high: e.player.p90_votes,
+      tip: `${e.player.player}: ${fmt(e.player.predicted_votes)} projected votes`
+    })), { labelWidth: 170 })}</div>
+
+    <h2>Fixtures</h2>
+    <p class="note">Every match this club played, in order, with the player from this
+       club most likely to poll in it.</p>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Round</th><th>Opponent</th><th>When</th>
+      <th>Most likely to poll</th><th>Expected votes</th>
+    </tr></thead><tbody>${fixtureRows}</tbody></table></div>
+
+    <h2>Full squad</h2>
+    <div class="table-wrap"><table><thead><tr>
+      <th>#</th><th>Player</th><th>Projected votes</th><th>Games</th>
+      ${hasWin ? '<th>Win prob.</th>' : ''}${hasActual ? '<th>Actual</th>' : ''}
+    </tr></thead><tbody>${squadRows}</tbody></table></div>
+    <p><a class="back-link" href="#">&larr; Back to the season</a></p>`;
+  attachTips(view);
+}
+
+/* ---------------- Routing between the views ---------------- */
+
+function showOnly(id) {
+  ['season-view', 'player-view', 'round-view', 'team-view'].forEach(name => {
+    $(name).classList.toggle('hidden', name !== id);
+  });
+}
+
+// Keep the controls telling the truth about where you are. Landing on a
+// Collingwood player while the team box still reads "Sydney" is just confusing,
+// and the round box does not apply to a player or team page at all.
+function syncControls({ team, round }) {
+  $('round-select').value = round || '';
+  if (team !== undefined && $('team-select').value !== team) {
+    const exists = [...$('team-select').options].some(o => o.value === team);
+    if (exists) {
+      $('team-select').value = team;
+      populatePlayerSearch(currentRun());
+    }
+  }
+}
+
+function route() {
+  const hash = window.location.hash || '';
+  if (hash.startsWith('#player=')) {
+    showOnly('player-view');
+    const player = renderPlayer(decodeURIComponent(hash.slice('#player='.length)));
+    syncControls({ team: player ? player.team : undefined, round: '' });
+  } else if (hash.startsWith('#round=')) {
+    const label = decodeURIComponent(hash.slice('#round='.length));
+    showOnly('round-view');
+    renderRound(label);
+    syncControls({ round: label });
+  } else if (hash.startsWith('#team=')) {
+    const name = decodeURIComponent(hash.slice('#team='.length));
+    showOnly('team-view');
+    renderTeam(name);
+    syncControls({ team: name, round: '' });
+  } else {
+    syncControls({ round: '' });
+    showOnly('season-view');
+    render();
+  }
+  window.scrollTo({ top: 0 });
+}
+
+$('run-select').addEventListener('change', () => {
+  const run = currentRun();
+  populateTeams(run);
+  populateRounds(run);
+  populatePlayerSearch(run);
+  route();
+});
+$('team-select').addEventListener('change', () => {
+  populatePlayerSearch(currentRun());
+  if (!window.location.hash || window.location.hash === '#') render();
+});
+$('round-select').addEventListener('change', () => {
+  const value = $('round-select').value;
+  window.location.hash = value ? '#round=' + encodeURIComponent(value) : '';
+  if (!value) route();
+});
+$('player-search').addEventListener('change', event => {
+  const match = findPlayerByLabel(currentRun(), event.target.value);
+  if (match) {
+    window.location.hash = playerHref(match);
+    event.target.value = '';
+  }
+});
+window.addEventListener('hashchange', route);
+
 populateTeams(currentRun());
-render();
+populateRounds(currentRun());
+populatePlayerSearch(currentRun());
+route();
 """
 
 
@@ -585,7 +1195,7 @@ def render_site(
 <div id="tip" role="status" aria-live="polite"></div>
 <div class="wrap">
 <header>
-  <div class="brand">{_logo()}<h1>{title}</h1></div>
+  <a class="brand" href="#" id="home-link">{_logo()}<h1>{title}</h1></a>
   <p class="sub">Predicted 3-2-1 umpire votes from AFL player match statistics.
      Generated {generated}.</p>
 </header>
@@ -599,9 +1209,20 @@ def render_site(
     <label for="team-select">Team</label>
     <select id="team-select"><option value="">All teams</option></select>
   </div>
+  <div class="control">
+    <label for="player-search">Find a player</label>
+    <input id="player-search" type="search" list="player-options"
+           placeholder="Start typing a name..." autocomplete="off">
+    <datalist id="player-options"></datalist>
+  </div>
+  <div class="control">
+    <label for="round-select">Round</label>
+    <select id="round-select"><option value="">Whole season</option></select>
+  </div>
   <div class="run-meta" id="run-meta"></div>
 </div>
 
+<div id="season-view">
 <div class="tiles" id="tiles"></div>
 
 <h2 id="leaderboard-title">Projected leaderboard</h2>
@@ -642,6 +1263,11 @@ def render_site(
 
 <h2>Full projected leaderboard</h2>
 <div id="player-table"></div>
+</div><!-- /season-view -->
+
+<div id="player-view" class="hidden"></div>
+<div id="round-view" class="hidden"></div>
+<div id="team-view" class="hidden"></div>
 
 <footer>
   <p>Built by the

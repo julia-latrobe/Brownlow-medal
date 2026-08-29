@@ -8,6 +8,7 @@
   "n_simulations": 10000,
   "seed": 0,
   "ineligible": [],
+  "annotations": {},
   "compare_baseline": true,
   "features": {
     "within_match_stats": [],

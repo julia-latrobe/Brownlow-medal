@@ -24,6 +24,10 @@ import pandas as pd
 
 from brownlow.model import MatchIndex
 
+#: Joins a player's name to their club to form a unique key. A control
+#: character, so it cannot collide with anything in a real name.
+_KEY_SEPARATOR = "\u241f"
+
 
 def simulate_season(
     predictions: pd.DataFrame,
@@ -61,7 +65,24 @@ def simulate_season(
     df = predictions.sort_values("match_id", kind="stable").reset_index(drop=True)
     index = MatchIndex(df["match_id"].to_numpy())
 
-    players, player_codes = np.unique(df[player_column].to_numpy(), return_inverse=True)
+    # Two different players can share a name -- the AFL has had two Bailey
+    # Williamses at once -- so identity is the name *and* the club, never the
+    # name alone. Pooling them would inflate one player's total and hand both
+    # the same wrong win probability.
+    identity = df[player_column].astype(str)
+    has_team = "team" in df.columns
+    if has_team:
+        identity = identity + _KEY_SEPARATOR + df["team"].astype(str)
+    player_codes, unique_keys = pd.factorize(identity, sort=True)
+
+    if has_team:
+        split = pd.Series(unique_keys).str.split(_KEY_SEPARATOR, n=1, expand=True)
+        players = split[0].to_numpy()
+        player_teams = split[1].to_numpy()
+    else:
+        players = np.asarray(unique_keys)
+        player_teams = None
+
     totals = np.zeros((n_simulations, len(players)), dtype=np.float32)
 
     rng = np.random.default_rng(seed)
@@ -81,6 +102,9 @@ def simulate_season(
 
     eligible = np.ones(len(players), dtype=bool)
     if ineligible:
+        # Matched on name, so a shared name rules out both players. That errs
+        # towards excluding someone who could win rather than crowning someone
+        # who cannot, which is the safer way round.
         eligible &= ~np.isin(players, list(ineligible))
 
     contested = np.where(eligible, totals, -np.inf)
@@ -107,9 +131,8 @@ def simulate_season(
         }
     )
 
-    if "team" in df.columns:
-        teams = df.groupby(player_column)["team"].agg(lambda s: s.mode().iat[0])
-        summary["team"] = summary[player_column].map(teams)
+    if player_teams is not None:
+        summary["team"] = player_teams
 
     summary = summary.sort_values(
         ["win_probability", "mean_votes"], ascending=False
